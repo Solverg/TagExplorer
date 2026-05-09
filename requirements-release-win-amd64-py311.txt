@@ -1,7 +1,7 @@
 # Exact dependency pins for TagExplorer 1.0.0 Windows x86-64 / Python 3.11
 # release builds. Refresh this file with pip-compile on the release machine
 # before publishing a new version.
-altgraph==0.17.5
+altgraph==0.17.4
 numpy==2.2.6
 opencv-python==4.13.0.92
 packaging==26.2
