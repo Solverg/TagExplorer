@@ -1,0 +1,5 @@
+PyQt6>=6.6,<7
+opencv-python>=4.8,<5
+PyInstaller>=6,<7
+sqlcipher3-wheels>=0.5.4,<0.6
+pywinstyles>=1,<2

@@ -1,0 +1,17 @@
+SPDX-License-Identifier: GPL-3.0-or-later
+
+TagExplorer
+Copyright (C) 2026 Solverg
+
+TagExplorer is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or any later version.
+
+TagExplorer is distributed in the hope that it will be useful, but without any
+warranty; without even the implied warranty of merchantability or fitness for a
+particular purpose.
+
+The full license text is available at:
+https://www.gnu.org/licenses/gpl-3.0.html
+
+Binary release packages should include this file and THIRD_PARTY_NOTICES.md.
