@@ -424,6 +424,7 @@ class SectionWidget(QWidget):
         font = QFont(lbl.font())
         font.setBold(True)
         lbl.setFont(font)
+        lbl.setStyleSheet("color: #f4f4f4;")
         lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
         header_layout.addWidget(self._toggle_btn)
