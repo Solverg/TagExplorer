@@ -624,6 +624,9 @@ class FileTileWidget(QWidget):
         self._loading = False
         self._batch_size = BATCH_SIZE
         self._load_generation = 0
+        self._reload_scroll_restore: int | None = None
+        self._pending_scroll_restore: int | None = None
+        self._pending_scroll_restore_attempts = 0
 
         self._scroll = QScrollArea(self)
         self._scroll.setWidgetResizable(True)
@@ -659,6 +662,33 @@ class FileTileWidget(QWidget):
 
         self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
+    def scroll_position(self) -> int:
+        return self._scroll.verticalScrollBar().value()
+
+    def preserve_scroll_on_next_reload(self) -> None:
+        self._reload_scroll_restore = self.scroll_position()
+
+    def restore_scroll_position(self, value: int) -> None:
+        self._pending_scroll_restore = max(0, value)
+        self._pending_scroll_restore_attempts = 8
+        self._apply_pending_scroll_restore()
+
+    def _apply_pending_scroll_restore(self) -> None:
+        if self._pending_scroll_restore is None:
+            return
+
+        target = self._pending_scroll_restore
+        scroll_bar = self._scroll.verticalScrollBar()
+        scroll_bar.setValue(min(target, scroll_bar.maximum()))
+        if self._loading:
+            return
+        if not self._loading and self._pending_scroll_restore_attempts > 0:
+            self._pending_scroll_restore_attempts -= 1
+            QTimer.singleShot(25, self._apply_pending_scroll_restore)
+            return
+        self._pending_scroll_restore = None
+        self._pending_scroll_restore_attempts = 0
+
     def selected_paths(self) -> list[Path]:
         paths: list[Path] = []
         for sec in (self._sec_tagged, self._sec_untagged):
@@ -673,6 +703,10 @@ class FileTileWidget(QWidget):
     ) -> None:
         self._load_generation += 1
         generation = self._load_generation
+        restore_after_reload = self._reload_scroll_restore
+        self._reload_scroll_restore = None
+        self._pending_scroll_restore = restore_after_reload
+        self._pending_scroll_restore_attempts = 8 if restore_after_reload is not None else 0
         self._batch_size = max(1, batch_size)
         self.thumb_mgr.cancel_all()
         self._thumb_request_timer.stop()
@@ -708,6 +742,8 @@ class FileTileWidget(QWidget):
                 self._sec_untagged.append_records(batch)
                 self._sync_thumb_manager()
 
+        self._apply_pending_scroll_restore()
+
         if self._has_pending_records():
             QTimer.singleShot(1, lambda: self._load_next_batch(generation))
             return
@@ -723,6 +759,7 @@ class FileTileWidget(QWidget):
         self._pending_untagged.clear()
         self._pending_tagged_index = 0
         self._pending_untagged_index = 0
+        self._apply_pending_scroll_restore()
         self._schedule_visible_thumb_request()
 
     def _has_pending_records(self) -> bool:
@@ -906,6 +943,7 @@ class FileTileWidget(QWidget):
             QMessageBox.warning(self, "Batch edit failed", message)
             return
 
+        self.preserve_scroll_on_next_reload()
         self.files_changed.emit()
 
     def _rename_with_tags(self, source_path: Path, updated_tags: list[str]) -> tuple[bool, str | None]:
@@ -989,6 +1027,7 @@ class FileTileWidget(QWidget):
         except (FilenameValidationError, FileOperationError) as exc:
             QMessageBox.warning(self, "Rename", str(exc))
             return
+        self.preserve_scroll_on_next_reload()
         self.files_changed.emit()
 
     def _get_unique_path(self, target_path: Path) -> Path:
@@ -1019,6 +1058,7 @@ class FileTileWidget(QWidget):
             except FileOperationError as exc:
                 errors.append(f"{path.name}: {exc}")
         if deleted:
+            self.preserve_scroll_on_next_reload()
             self.files_changed.emit()
         if errors:
             QMessageBox.warning(self, "Delete", "\n".join(errors[:8]))

@@ -1,4 +1,4 @@
-# Pinned direct dependencies for TagExplorer 1.0.0 Windows release builds.
+# Pinned direct dependencies for TagExplorer 1.0.1 Windows release builds.
 # Regenerate a full transitive hash lock from requirements.in on the release
 # machine before publishing artifacts.
 PyQt6==6.11.0

@@ -12,6 +12,7 @@ from PyQt6.QtCore import (
     QFileInfo,
     QItemSelectionModel,
     QModelIndex,
+    QTimer,
     Qt,
     pyqtSignal,
 )
@@ -464,6 +465,9 @@ class FileListWidget(QWidget):
         self._records_by_path: dict[str, dict] = {}
         self._viewer: ImageViewerDialog | None = None
         self.tags_at_start = False
+        self._reload_scroll_restore: int | None = None
+        self._pending_scroll_restore: int | None = None
+        self._pending_scroll_restore_attempts = 0
 
         layout = QVBoxLayout(self)
         self.tree = QTreeView()
@@ -476,6 +480,31 @@ class FileListWidget(QWidget):
         self.tree.doubleClicked.connect(self._open_file)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.tree)
+
+    def scroll_position(self) -> int:
+        return self.tree.verticalScrollBar().value()
+
+    def preserve_scroll_on_next_reload(self) -> None:
+        self._reload_scroll_restore = self.scroll_position()
+
+    def restore_scroll_position(self, value: int) -> None:
+        self._pending_scroll_restore = max(0, value)
+        self._pending_scroll_restore_attempts = 12
+        self._apply_pending_scroll_restore()
+
+    def _apply_pending_scroll_restore(self) -> None:
+        if self._pending_scroll_restore is None:
+            return
+
+        value = self._pending_scroll_restore
+        scroll_bar = self.tree.verticalScrollBar()
+        scroll_bar.setValue(min(value, scroll_bar.maximum()))
+        if self._pending_scroll_restore_attempts > 0:
+            self._pending_scroll_restore_attempts -= 1
+            QTimer.singleShot(25, self._apply_pending_scroll_restore)
+            return
+
+        self._pending_scroll_restore = None
 
     def set_files(self, tagged: list[dict], untagged: list[dict]) -> None:
         """Populate virtual file list, preserving expand/collapse state."""
@@ -492,6 +521,10 @@ class FileListWidget(QWidget):
         self.model.set_files(tagged, untagged)
         self.tree.setExpanded(self.model.index(0, 0), tagged_expanded)
         self.tree.setExpanded(self.model.index(1, 0), untagged_expanded)
+        if self._reload_scroll_restore is not None:
+            scroll_position = self._reload_scroll_restore
+            self._reload_scroll_restore = None
+            self.restore_scroll_position(scroll_position)
 
     def _selected_paths(self) -> list[Path]:
         paths: list[Path] = []
@@ -642,6 +675,7 @@ class FileListWidget(QWidget):
             QMessageBox.warning(self, "Batch edit failed", message)
             return
 
+        self.preserve_scroll_on_next_reload()
         self.files_changed.emit()
 
     def _rename_files(self) -> None:
@@ -668,6 +702,7 @@ class FileListWidget(QWidget):
             QMessageBox.warning(self, "Rename", str(exc))
             return
 
+        self.preserve_scroll_on_next_reload()
         self.files_changed.emit()
 
     def _delete_files(self) -> None:
@@ -697,6 +732,7 @@ class FileListWidget(QWidget):
                 errors.append(f"{path.name}: {exc}")
 
         if deleted:
+            self.preserve_scroll_on_next_reload()
             self.files_changed.emit()
         if errors:
             QMessageBox.warning(self, "Delete", "\n".join(errors[:8]))

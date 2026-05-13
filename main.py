@@ -16,7 +16,7 @@ from core.updater import apply_update_and_relaunch
 
 APP_NAME = "TagExplorer"
 APP_ORGANIZATION = "Solverg"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 
 def _log_directory() -> Path:

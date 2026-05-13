@@ -228,6 +228,7 @@ class MainWindow(QMainWindow):
         self._list_view_dirty = True
         self._tile_view_dirty = True
         self._current_view_mode = "list"
+        self._pending_view_scroll_restore: tuple[str, int] | None = None
         self.scan_worker: ScanWorker | None = None
         self._scan_generation = 0
         self._pending_scan: tuple[int, Path, bool, bool] | None = None
@@ -443,6 +444,10 @@ class MainWindow(QMainWindow):
                 font-weight: normal;
             }
 
+            QMenu::item {
+                padding: 6px 28px 6px 12px;
+            }
+
             QMenu::item:selected {
                 background-color: rgba(130, 180, 255, 100);
             }
@@ -607,6 +612,7 @@ class MainWindow(QMainWindow):
     def _set_current_folder(self, folder: Path, *, update_navigation_root: bool) -> None:
         resolved_folder = folder.resolve()
         self.current_folder = resolved_folder
+        self._pending_view_scroll_restore = None
 
         # --- ЭТАП 4: Экстренная выгрузка памяти ---
         if hasattr(self, "file_tile_widget"):
@@ -808,6 +814,7 @@ class MainWindow(QMainWindow):
         self._list_view_dirty = True
         self._tile_view_dirty = True
         self._refresh_active_file_view()
+        self._restore_pending_view_scroll()
         displayed = len(tagged) + len(untagged)
         total = len(self.all_records)
         self.statusBar().showMessage(f"Displayed {displayed} of {total} files in {self.current_folder}")
@@ -864,7 +871,28 @@ class MainWindow(QMainWindow):
         self.list_view_action.blockSignals(False)
         self.tile_view_action.blockSignals(False)
 
+    def _capture_active_view_scroll(self) -> tuple[str, int]:
+        if self._current_view_mode == "tiles":
+            return ("tiles", self.file_tile_widget.scroll_position())
+        return ("list", self.file_list.scroll_position())
+
+    def _restore_pending_view_scroll(self) -> None:
+        if self._pending_view_scroll_restore is None:
+            return
+
+        mode, value = self._pending_view_scroll_restore
+        self._pending_view_scroll_restore = None
+        if mode != self._current_view_mode:
+            return
+
+        if mode == "tiles":
+            self.file_tile_widget.restore_scroll_position(value)
+            return
+
+        self.file_list.restore_scroll_position(value)
+
     def _on_files_changed(self) -> None:
+        self._pending_view_scroll_restore = self._capture_active_view_scroll()
         self.refresh_folder(force_rescan=True)
 
     def show_about(self) -> None:
@@ -884,7 +912,7 @@ class MainWindow(QMainWindow):
             return
 
         app = QApplication.instance()
-        current_version = app.applicationVersion() if app is not None else "1.0.0"
+        current_version = app.applicationVersion() if app is not None else "1.0.1"
         self._manual_update_check = manual
         if manual:
             self.statusBar().showMessage("Checking for updates...")

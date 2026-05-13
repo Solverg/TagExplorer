@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QCloseEvent, QImageReader, QKeyEvent, QPixmap
+from PyQt6.QtGui import QCloseEvent, QImageReader, QKeyEvent, QMovie, QPixmap
 from PyQt6.QtWidgets import QDialog, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from core.media_safety import IMAGE_PREVIEW_TARGET_EDGE, MediaSafetyError, read_limited_image
@@ -39,6 +39,8 @@ class ImageViewerDialog(QDialog):
             self.current_index = 0
 
         self._current_pixmap: QPixmap | None = None
+        self._current_movie: QMovie | None = None
+        self._movie_source_size: QSize | None = None
 
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -59,8 +61,13 @@ class ImageViewerDialog(QDialog):
         path = self.image_paths[self.current_index]
         self.setWindowTitle(f"Viewer - {path.name} ({self.current_index + 1} of {len(self.image_paths)})")
 
-        self._current_pixmap = None
+        self._clear_current_media()
         self.image_label.clear()
+
+        if path.suffix.lower() == ".gif":
+            self._load_movie(path)
+            return
+
         try:
             image = read_limited_image(
                 path,
@@ -73,6 +80,43 @@ class ImageViewerDialog(QDialog):
         self._current_pixmap = QPixmap.fromImage(image)
         self._update_pixmap_scale()
 
+    def _load_movie(self, path: Path) -> None:
+        try:
+            first_frame = read_limited_image(
+                path,
+                QSize(IMAGE_PREVIEW_TARGET_EDGE, IMAGE_PREVIEW_TARGET_EDGE),
+            )
+        except MediaSafetyError as exc:
+            self.image_label.setText(str(exc))
+            return
+
+        movie = QMovie(str(path))
+        if not movie.isValid():
+            self._current_pixmap = QPixmap.fromImage(first_frame)
+            self._update_pixmap_scale()
+            return
+
+        movie.setParent(self)
+        movie.finished.connect(self._restart_movie)
+        self._current_movie = movie
+        self._movie_source_size = first_frame.size()
+        self.image_label.setMovie(movie)
+        self._update_movie_scale()
+        movie.start()
+
+    def _clear_current_media(self) -> None:
+        movie = self._current_movie
+        self._current_movie = None
+        self._movie_source_size = None
+        self._current_pixmap = None
+        if movie is not None:
+            try:
+                movie.finished.disconnect(self._restart_movie)
+            except TypeError:
+                pass
+            movie.stop()
+            movie.deleteLater()
+
     def _update_pixmap_scale(self) -> None:
         if self._current_pixmap and not self._current_pixmap.isNull():
             scaled = self._current_pixmap.scaled(
@@ -82,12 +126,39 @@ class ImageViewerDialog(QDialog):
             )
             self.image_label.setPixmap(scaled)
 
+    def _update_movie_scale(self) -> None:
+        if self._current_movie is None or self._movie_source_size is None:
+            return
+
+        target_size = QSize(
+            max(1, self.image_label.width()),
+            max(1, self.image_label.height()),
+        )
+        scaled_size = self._movie_source_size.scaled(
+            target_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+        )
+        if scaled_size.isValid():
+            self._current_movie.setScaledSize(scaled_size)
+
+    def _restart_movie(self) -> None:
+        if self._current_movie is None:
+            return
+        if self._current_movie.frameCount() == 1:
+            return
+
+        self._current_movie.jumpToFrame(0)
+        self._current_movie.start()
+
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
-        self._update_pixmap_scale()
-
+        if self._current_movie is not None:
+            self._update_movie_scale()
+        else:
+            self._update_pixmap_scale()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
+        self._clear_current_media()
         super().closeEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
