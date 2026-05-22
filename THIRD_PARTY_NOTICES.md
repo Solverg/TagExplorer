@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-TagExplorer 1.0.1 is distributed as free and open-source software under the
+TagExplorer 1.1.0 is distributed as free and open-source software under the
 GPL-3.0-or-later license. The Windows binary bundles third-party components
 whose licenses must be respected by redistributors.
 

@@ -14,12 +14,24 @@ without a hidden metadata database.
 
 - Native Windows 10/11 desktop UI with Acrylic/Mica styling through
   `pywinstyles`.
-- Fast tag filtering with AND / OR logic.
+- Fast tag filtering with AND / OR logic plus NOT exclusions.
 - Batch tag editing with conflict-safe renames.
 - Virtualized list and tile views for large folders.
 - Image and video previews using PyQt6 image readers and OpenCV.
 - SQLCipher-backed local cache via `sqlcipher3-wheels`, with an explicit
   plaintext SQLite fallback warning when SQLCipher is unavailable.
+
+## Tag Filtering
+
+Tag filtering is built around two active filter groups:
+
+- `Include`: click a tag pill to require that tag in the result set.
+- `Exclude`: click the small `🚫` button inside a tag pill to hide files with
+  that tag.
+
+The `AND` / `OR` mode applies only to `Include` tags. `Exclude` tags are always
+applied as a final "not tagged with" filter, so you can search for files with
+`work` or `photo` while excluding files tagged `archive`.
 
 ## Tech Stack
 
@@ -48,12 +60,12 @@ python main.py
 
 ## Release Build
 
-TagExplorer 1.0.1 is configured for a console-free onefile PyInstaller build.
+TagExplorer 1.1.0 is configured for a console-free onefile PyInstaller build.
 UPX is disabled for official builds to reduce antivirus false positives and
 keep crash analysis simpler.
 
 Use a clean 64-bit Windows Python 3.11 virtual environment for the official
-1.0.1 build because `requirements-release-win-amd64-py311.txt` is pinned for
+1.1.0 build because `requirements-release-win-amd64-py311.txt` is pinned for
 that interpreter and platform.
 
 ```powershell
@@ -71,14 +83,14 @@ The built executable should be attached to GitHub Releases as
 `TagExplorer.exe`. The in-app updater checks `Solverg/TagExplorer` and accepts
 release tags in `v1.2.3` or `1.2.3` format.
 
-For the 1.0.1 release, publish tag `v1.0.1` or `1.0.1`. A running
-TagExplorer 1.0.1 build should report no update while the latest GitHub Release
-is also 1.0.1; update installation can only be fully exercised once a newer
+For the 1.1.0 release, publish tag `v1.1.0` or `1.1.0`. A running
+TagExplorer 1.1.0 build should report no update while the latest GitHub Release
+is also 1.1.0; update installation can only be fully exercised once a newer
 release asset exists.
 
 The committed `requirements.txt` pins direct dependencies, and
 `requirements-release-win-amd64-py311.txt` pins the known transitive dependency
-set for the 1.0.1 Windows x86-64 / Python 3.11 release. For stronger supply
+set for the 1.1.0 Windows x86-64 / Python 3.11 release. For stronger supply
 chain integrity, regenerate a hash-locked file on the target Windows release
 machine:
 
@@ -116,7 +128,7 @@ python -m unittest discover -s tests -v
   cleanly and the cache is still usable.
 - Reopen the app and confirm cached results for the scanned folder appear
   correctly.
-- Exercise AND and OR tag filtering.
+- Exercise AND, OR, and NOT tag filtering.
 - Exercise file type filters for images, video, audio, and documents.
 - Open image previews and the full image viewer.
 - Open GIF previews and confirm GIFs loop in the full image viewer.
@@ -134,9 +146,9 @@ python -m unittest discover -s tests -v
 - Confirm the application starts with `console=False`.
 - Confirm startup failures are logged to
   `%LOCALAPPDATA%\Solverg\TagExplorer\logs\startup.log`.
-- Check the executable Properties dialog contains version `1.0.1` metadata.
+- Check the executable Properties dialog contains version `1.1.0` metadata.
 - After the release exists on GitHub, run "Check for Updates" and confirm
-  1.0.1 reports no update; repeat update installation when a newer release is
+  1.1.0 reports no update; repeat update installation when a newer release is
   published.
 - Scan the release archive with Windows Defender or the intended AV baseline.
 

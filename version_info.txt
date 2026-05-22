@@ -1,8 +1,8 @@
 # UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 1, 0),
-    prodvers=(1, 0, 1, 0),
+    filevers=(1, 1, 0, 0),
+    prodvers=(1, 1, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -17,12 +17,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'Solverg'),
           StringStruct('FileDescription', 'TagExplorer desktop tag-based file manager'),
-          StringStruct('FileVersion', '1.0.1'),
+          StringStruct('FileVersion', '1.1.0'),
           StringStruct('InternalName', 'TagExplorer'),
           StringStruct('LegalCopyright', 'Copyright (C) 2026 Solverg'),
           StringStruct('OriginalFilename', 'TagExplorer.exe'),
           StringStruct('ProductName', 'TagExplorer'),
-          StringStruct('ProductVersion', '1.0.1'),
+          StringStruct('ProductVersion', '1.1.0'),
         ])
       ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])

@@ -12,6 +12,7 @@ def filter_files(
     selected_tags: list[str],
     mode: str,
     selected_types: list[str] | None = None,
+    excluded_tags: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Filter records by tags and types, return (tagged_results, untagged_records)."""
     if selected_types:
@@ -19,6 +20,14 @@ def filter_files(
 
     def record_tags(record: dict[str, Any]) -> list[str]:
         return normalize_tags(record.get("tags", []))
+
+    excluded = set(normalize_tags(excluded_tags or []))
+    if excluded:
+        records = [
+            record
+            for record in records
+            if not excluded.intersection(record_tags(record))
+        ]
 
     untagged = [record for record in records if not record_tags(record)]
 

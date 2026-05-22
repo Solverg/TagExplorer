@@ -364,9 +364,9 @@ class MainWindow(QMainWindow):
         self.view_stack = QStackedWidget()
         self.view_stack.addWidget(self.file_list)
         self.view_stack.addWidget(self.file_tile_widget)
-        center_layout.addWidget(self.tag_panel, 1)
+        center_layout.addWidget(self.tag_panel, 2)
         center_layout.addWidget(self.type_filter, 0)
-        center_layout.addWidget(self.view_stack, 3)
+        center_layout.addWidget(self.view_stack, 5)
 
         self.preview_panel = PreviewPanel()
         self.preview_panel.setObjectName("PreviewPanel")
@@ -800,11 +800,12 @@ class MainWindow(QMainWindow):
 
     def _apply_filter(self, *args) -> None:
         selected_tags = self.tag_panel.selected_tags()
+        excluded_tags = self.tag_panel.excluded_tags()
         mode = self.tag_panel.mode()
         selected_types = self.type_filter.selected_types()
 
         try:
-            tagged, untagged = filter_files(self.all_records, selected_tags, mode, selected_types)
+            tagged, untagged = filter_files(self.all_records, selected_tags, mode, selected_types, excluded_tags)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Filter error", f"Could not apply filters:\n{exc}")
             return
@@ -912,7 +913,7 @@ class MainWindow(QMainWindow):
             return
 
         app = QApplication.instance()
-        current_version = app.applicationVersion() if app is not None else "1.0.1"
+        current_version = app.applicationVersion() if app is not None else "1.1.0"
         self._manual_update_check = manual
         if manual:
             self.statusBar().showMessage("Checking for updates...")
