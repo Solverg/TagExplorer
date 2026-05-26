@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, QRect, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QPropertyAnimation, QEasingCurve, QRect, Qt, QTimer, pyqtSignal, pyqtProperty
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractScrollArea,
-    QButtonGroup,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -20,16 +18,159 @@ from PyQt6.QtWidgets import (
 )
 
 from core.tags import tag_sort_key
+from ui.theme import (
+    DEFAULT_THEME,
+    ThemeName,
+    destructive_secondary_action_button_stylesheet,
+    normalize_theme_name,
+)
+
+
+class ModeToggle(QWidget):
+    """Pill-shaped AND / OR toggle that slides a thumb between two labels."""
+
+    toggled = pyqtSignal(str)  # emits "AND" or "OR"
+
+    _THUMB_W = 44
+    _THUMB_H = 22
+    _PADDING = 3
+    _LABEL_W = 44
+    _LABEL_H = 22
+    _BORDER = 1  # track border; adding to geometry so thumb never clips
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        # True  → AND (thumb on the left)
+        # False → OR  (thumb on the right)
+        self._is_and = False
+
+        total_w = self._LABEL_W * 2 + self._PADDING * 2 + self._BORDER * 2
+        total_h = self._LABEL_H + self._PADDING * 2 + self._BORDER * 2
+        self.setFixedSize(total_w, total_h)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Toggle filter mode: AND / OR")
+
+        # Animated thumb x-position (left edge of thumb inside widget)
+        self._thumb_x: float = self._BORDER + self._PADDING + self._LABEL_W  # starts at OR
+        self._anim = QPropertyAnimation(self, b"thumb_x", self)
+        self._anim.setDuration(160)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+
+    # ── pyqtProperty so QPropertyAnimation can drive it ──────────────────────
+    @pyqtProperty(float)
+    def thumb_x(self) -> float:  # type: ignore[override]
+        return self._thumb_x
+
+    @thumb_x.setter  # type: ignore[override]
+    def thumb_x(self, value: float) -> None:
+        self._thumb_x = value
+        self.update()
+
+    # ── public API ────────────────────────────────────────────────────────────
+    def set_mode(self, mode: str) -> None:
+        """Set 'AND' or 'OR' without emitting the signal."""
+        self._is_and = mode.upper() == "AND"
+        self._snap_thumb()
+
+    def mode(self) -> str:
+        return "AND" if self._is_and else "OR"
+
+    # ── interaction ───────────────────────────────────────────────────────────
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._is_and = not self._is_and
+            self._animate_thumb()
+            self.toggled.emit(self.mode())
+        super().mousePressEvent(event)
+
+    # ── animation helpers ─────────────────────────────────────────────────────
+    def _target_x(self) -> float:
+        offset = self._BORDER + self._PADDING
+        return float(offset if self._is_and else offset + self._LABEL_W)
+
+    def _snap_thumb(self) -> None:
+        self._thumb_x = self._target_x()
+        self.update()
+
+    def _animate_thumb(self) -> None:
+        self._anim.stop()
+        self._anim.setStartValue(self._thumb_x)
+        self._anim.setEndValue(self._target_x())
+        self._anim.start()
+
+    # ── painting ──────────────────────────────────────────────────────────────
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        is_dark = self.palette().window().color().lightness() < 128
+
+        # ── track ────────────────────────────────────────────────────────────
+        if is_dark:
+            track_bg   = QColor("#252b38")
+            track_bdr  = QColor("#4a5568")
+        else:
+            track_bg   = QColor("#dde3ec")
+            track_bdr  = QColor("#b0bac8")
+
+        radius = self.height() / 2
+        # Inset by half border so stroke doesn't get clipped
+        b = self._BORDER / 2
+        track_rect = self.rect().adjusted(
+            int(b + 0.5), int(b + 0.5), -int(b + 0.5), -int(b + 0.5)
+        )
+        p.setPen(QPen(track_bdr, self._BORDER))
+        p.setBrush(track_bg)
+        p.drawRoundedRect(track_rect, radius, radius)
+
+        # ── sliding thumb ────────────────────────────────────────────────────
+        thumb_x = int(self._thumb_x)
+        thumb_rect = QRect(thumb_x, self._BORDER + self._PADDING, self._THUMB_W, self._THUMB_H)
+
+        if is_dark:
+            thumb_bg  = QColor("#3d4d63")   # muted slate-steel
+            thumb_bdr = QColor("#5a6e8a")
+        else:
+            thumb_bg  = QColor("#4a6080")
+            thumb_bdr = QColor("#334d6e")
+
+        thumb_r = self._THUMB_H / 2
+        p.setPen(QPen(thumb_bdr, 1))
+        p.setBrush(thumb_bg)
+        p.drawRoundedRect(thumb_rect, thumb_r, thumb_r)
+
+        # ── labels ────────────────────────────────────────────────────────────
+        font = p.font()
+        font.setPointSize(8)
+        font.setBold(True)
+        p.setFont(font)
+
+        lx = self._BORDER + self._PADDING
+        ly = self._BORDER + self._PADDING
+        and_rect = QRect(lx, ly, self._LABEL_W, self._LABEL_H)
+        or_rect  = QRect(lx + self._LABEL_W, ly, self._LABEL_W, self._LABEL_H)
+
+        def _label_color(rect: QRect) -> QColor:
+            # white if covered by thumb, else dim
+            overlap = rect.intersected(thumb_rect)
+            if overlap.width() > rect.width() * 0.5:
+                return QColor("#ffffff")
+            return QColor("#94a3b8" if is_dark else "#64748b")
+
+        p.setPen(_label_color(and_rect))
+        p.drawText(and_rect, Qt.AlignmentFlag.AlignCenter, "AND")
+        p.setPen(_label_color(or_rect))
+        p.drawText(or_rect, Qt.AlignmentFlag.AlignCenter, "OR")
+
+        p.end()
 
 
 class TagFilterButton(QPushButton):
     """Tag pill with a dedicated exclude mini-button on the right edge."""
 
     exclude_clicked = pyqtSignal()
-    _EXCLUDE_EMOJI = "🚫"
-    _EXCLUDE_BUTTON_SIZE = 20
-    _EXCLUDE_BUTTON_RIGHT_MARGIN = 6
-    _EXCLUDE_HIT_PADDING = 5
+    _EXCLUDE_ZONE_W = 28       # width of the right zone reserved for the ×
+    _EXCLUDE_HIT_PADDING = 4
 
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__(text, parent)
@@ -38,16 +179,13 @@ class TagFilterButton(QPushButton):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Click tag to include; click 🚫 to exclude")
+        self.setToolTip("Click to include tag · click 🚫 to exclude from results")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
     def _exclude_button_rect(self) -> QRect:
-        y = max(0, (self.height() - self._EXCLUDE_BUTTON_SIZE) // 2)
-        return QRect(
-            max(0, self.width() - self._EXCLUDE_BUTTON_SIZE - self._EXCLUDE_BUTTON_RIGHT_MARGIN),
-            y,
-            self._EXCLUDE_BUTTON_SIZE,
-            self._EXCLUDE_BUTTON_SIZE,
-        )
+        """Square zone on the right where the × is drawn."""
+        size = self.height()
+        return QRect(self.width() - size, 0, size, size)
 
     def _exclude_hit_rect(self) -> QRect:
         return self._exclude_button_rect().adjusted(
@@ -90,41 +228,112 @@ class TagFilterButton(QPushButton):
         super().leaveEvent(event)
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
-        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        state = str(self.property("tagState") or "none")
+        state   = str(self.property("tagState") or "none")
         is_dark = self.palette().window().color().lightness() < 128
+        w, h    = self.width(), self.height()
+        radius  = h / 2.0
+
+        # ── resolve base colors from stylesheet property ──────────────────
+        # The tag base color is baked into the stylesheet bg; we read it back
+        # from the palette or fall back to a neutral. We paint everything
+        # ourselves so the stylesheet only needs to supply the base bg tint.
+        bg_color   = self.palette().button().color()
+        bg_color.setAlphaF(0.0)   # we override fully below
+
+        # ── per-state pill background & border ───────────────────────────
         if state == "exclude":
-            background = QColor("#b91c1c" if is_dark else "#fecaca")
-            border = QColor("#fecaca" if is_dark else "#b91c1c")
+            pill_bg  = QColor(185, 28,  28,  int(0.70 * 255) if is_dark else int(0.22 * 255))
+            pill_bdr = QColor(248, 113, 113, int(0.90 * 255) if is_dark else int(0.70 * 255))
+            text_col = QColor("#ffffff" if is_dark else "#7f1d1d")
         elif state == "include":
-            background = QColor("#ffffff" if is_dark else "#dbeafe")
-            border = QColor("#bfdbfe" if is_dark else "#2563eb")
-            background.setAlphaF(0.18 if is_dark else 0.95)
+            # base color tint comes from the stylesheet; we draw a lighter overlay
+            pill_bg  = QColor(255, 255, 255, int(0.10 * 255))
+            pill_bdr = QColor(180, 210, 255, int(0.80 * 255))
+            text_col = QColor("#ffffff")
         else:
-            background = QColor("#ffffff")
-            border = QColor("#dbeafe" if is_dark else "#94a3b8")
-            background.setAlphaF(0.50)
+            pill_bg  = QColor(255, 255, 255, int(0.06 * 255) if is_dark else int(0.55 * 255))
+            pill_bdr = QColor(255, 255, 255, int(0.15 * 255) if is_dark else int(0.28 * 255))
+            text_col = QColor("#e8edf5" if is_dark else "#1f2a37")
 
-        if self._exclude_hovered:
-            background = QColor("#ef4444" if is_dark else "#fee2e2")
-            border = QColor("#fecaca" if is_dark else "#dc2626")
-        if self._exclude_pressed:
-            background = QColor("#991b1b" if is_dark else "#fecaca")
-            border = QColor("#ffffff" if is_dark else "#991b1b")
+        # ── hover / press tinting ────────────────────────────────────────
+        hovered = self.underMouse() and not self._exclude_hovered
+        pressed = self.isDown() and not self._exclude_pressed
 
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        button_rect = self._exclude_button_rect()
-        painter.setPen(QPen(border, 1))
-        painter.setBrush(background)
-        painter.drawRoundedRect(button_rect, 5, 5)
+        if pressed:
+            pill_bg = pill_bg.lighter(130)
+        elif hovered:
+            pill_bg = pill_bg.lighter(115)
 
-        font = painter.font()
-        font.setPointSize(9)
-        painter.setFont(font)
-        painter.setPen(QColor("#ffffff" if is_dark else "#111827"))
-        painter.drawText(button_rect, Qt.AlignmentFlag.AlignCenter, self._EXCLUDE_EMOJI)
+        # ── draw pill body ───────────────────────────────────────────────
+        from PyQt6.QtCore import QRectF
+        r = self.rect()
+        inset = 0.5
+        pill_rect_f = QRectF(r.x() + inset, r.y() + inset, r.width() - inset, r.height() - inset)
+
+        # fill via stylesheet base color is gone — draw solid tinted bg
+        # First draw the tag's base color (from the QPalette button role
+        # which the stylesheet sets), then overlay our state tint
+        base_hex = str(self.property("baseColor") or "#2A3140")
+        base = QColor(base_hex)
+        base.setAlphaF(1.0)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(base)
+        p.drawRoundedRect(pill_rect_f, radius, radius)
+
+        p.setBrush(pill_bg)
+        p.drawRoundedRect(pill_rect_f, radius, radius)
+
+        # border
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(pill_bdr, 1.0))
+        p.drawRoundedRect(pill_rect_f, radius, radius)
+
+        # ── separator line before × zone ────────────────────────────────
+        sep_x = w - h
+        sep_color = QColor(pill_bdr)
+        sep_color.setAlphaF(pill_bdr.alphaF() * 0.6)
+        p.setPen(QPen(sep_color, 1))
+        margin = int(h * 0.25)
+        p.drawLine(sep_x, margin, sep_x, h - margin)
+
+        # ── tag label ────────────────────────────────────────────────────
+        font = p.font()
+        font.setPointSizeF(font.pointSizeF())
+        font.setWeight(600 if state != "none" else 400)
+        p.setFont(font)
+        p.setPen(text_col)
+        label_rect = QRect(int(h * 0.45), 0, sep_x - int(h * 0.45), h)
+        p.drawText(label_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text())
+
+        # ── × button zone ────────────────────────────────────────────────
+        x_rect = QRect(sep_x, 0, h, h)
+
+        if self._exclude_hovered or self._exclude_pressed:
+            x_bg = QColor(220, 38, 38, int(0.55 * 255) if not self._exclude_pressed else int(0.75 * 255))
+            p.setBrush(x_bg)
+            p.setPen(Qt.PenStyle.NoPen)
+            # right half pill only
+            p.setClipRect(x_rect)
+            p.drawRoundedRect(pill_rect_f, radius, radius)
+            p.setClipping(False)
+
+        # draw no-entry icon: circle + diagonal slash
+        cx, cy = x_rect.center().x(), x_rect.center().y()
+        icon_r = int(h * 0.22)
+        icon_color = QColor("#ff8080" if self._exclude_hovered or self._exclude_pressed
+                            else ("#888888" if is_dark else "#777777"))
+        pen = QPen(icon_color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        from PyQt6.QtCore import QRectF as _QRectF
+        p.drawEllipse(_QRectF(cx - icon_r, cy - icon_r, icon_r * 2, icon_r * 2))
+        slash = int(icon_r * 0.68)
+        p.drawLine(cx - slash, cy + slash, cx + slash, cy - slash)
+
+        p.end()
 
 
 class ActiveFilterRow(QWidget):
@@ -149,6 +358,7 @@ class ActiveFilterRow(QWidget):
         layout.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("ActiveFilterScrollArea")
         self.scroll_area.setWidgetResizable(False)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -158,10 +368,14 @@ class ActiveFilterRow(QWidget):
         self.scroll_area.setMinimumWidth(0)
         self.scroll_area.setFixedHeight(self._ROW_HEIGHT)
         self.scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.scroll_area.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.scroll_area.viewport().setAutoFillBackground(False)
 
         self.content = QWidget()
+        self.content.setObjectName("ActiveFilterContent")
         self.content.setFixedHeight(self._CONTENT_HEIGHT)
         self.content.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.content.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.scroll_area.setWidget(self.content)
         layout.addWidget(self.scroll_area, 1)
 
@@ -225,6 +439,7 @@ class TagPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._theme_name: ThemeName = DEFAULT_THEME
         self._tag_buttons: dict[str, TagFilterButton] = {}
         self._tag_base_colors: dict[str, str] = {}
         self._tag_states: dict[str, str] = {}
@@ -235,20 +450,19 @@ class TagPanel(QWidget):
 
         top_row = QHBoxLayout()
         top_row.addWidget(QLabel("Tag filter mode:"))
-        self.and_button = QRadioButton("AND")
-        self.or_button = QRadioButton("OR")
-        self.or_button.setChecked(True)
 
-        self.mode_group = QButtonGroup(self)
-        self.mode_group.addButton(self.and_button)
-        self.mode_group.addButton(self.or_button)
-        self.mode_group.buttonToggled.connect(lambda _btn, _checked: self._emit_state())
+        self.mode_toggle = ModeToggle()
+        self.mode_toggle.set_mode("OR")
+        self.mode_toggle.toggled.connect(lambda _mode: self._emit_state())
 
-        top_row.addWidget(self.and_button)
-        top_row.addWidget(self.or_button)
+        top_row.addWidget(self.mode_toggle)
         top_row.addStretch(1)
 
         self.clear_button = QPushButton("Clear all")
+        self.clear_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_button.setFixedHeight(28)
+        self.clear_button.setStyleSheet(destructive_secondary_action_button_stylesheet(self._theme_name))
         self.clear_button.clicked.connect(self.clear_selection)
         top_row.addWidget(self.clear_button)
         layout.addLayout(top_row)
@@ -269,16 +483,28 @@ class TagPanel(QWidget):
         layout.addWidget(self.active_filters_widget)
 
         self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("TagCloudScrollArea")
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.scroll_area.viewport().setAutoFillBackground(False)
 
         self.tags_container = QWidget()
+        self.tags_container.setObjectName("TagCloudContent")
+        self.tags_container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.tags_layout = QGridLayout(self.tags_container)
         self.tags_layout.setHorizontalSpacing(8)
         self.tags_layout.setVerticalSpacing(8)
-        self.tags_layout.setContentsMargins(8, 0, 8, 0)
+        self.tags_layout.setContentsMargins(8, 4, 8, 0)
         self.scroll_area.setWidget(self.tags_container)
         layout.addWidget(self.scroll_area)
+
+    def apply_theme(self, theme_name: ThemeName) -> None:
+        self._theme_name = normalize_theme_name(theme_name)
+        self.clear_button.setStyleSheet(destructive_secondary_action_button_stylesheet(self._theme_name))
+        self._refresh_tag_styles()
+        self._update_active_filters()
+        self.mode_toggle.update()
 
     def set_tags(self, tags: list[str]) -> None:
         """Render sorted unique tags as selectable rounded buttons."""
@@ -295,12 +521,14 @@ class TagPanel(QWidget):
         for index, tag in enumerate(sorted(set(tags), key=tag_sort_key)):
             button = TagFilterButton(tag)
             button.setCheckable(True)
+            button.setMinimumHeight(28)
             button.clicked.connect(lambda _checked=False, tag=tag: self._on_tag_clicked(tag))
             button.exclude_clicked.connect(lambda tag=tag: self._on_tag_exclude_clicked(tag))
             base_color = self._BASE_TAG_COLORS[index % len(self._BASE_TAG_COLORS)]
             self._tag_base_colors[tag] = base_color
             self._tag_states[tag] = "none"
             button.setProperty("tagState", "none")
+            button.setProperty("baseColor", base_color)
             button.setStyleSheet(self._build_tag_stylesheet(base_color, "none"))
             row = index // columns
             col = index % columns
@@ -326,7 +554,7 @@ class TagPanel(QWidget):
 
     def mode(self) -> str:
         """Return current filter mode: AND or OR."""
-        return "AND" if self.and_button.isChecked() else "OR"
+        return self.mode_toggle.mode()
 
     def clear_selection(self) -> None:
         """Uncheck all tag buttons."""
@@ -437,55 +665,19 @@ class TagPanel(QWidget):
         state = self._tag_states.get(tag, "none")
         base_color = self._tag_base_colors.get(tag, self._BASE_TAG_COLORS[0])
         button.setText(tag)
+        button.setProperty("baseColor", base_color)
         button.setStyleSheet(self._build_tag_stylesheet(base_color, state))
 
     def _build_tag_stylesheet(self, base_color: str, state: str) -> str:
-        is_dark = self.palette().window().color().lightness() < 128
-        base_alpha = 0.9 if is_dark else 0.18
-        hover_alpha = min(base_alpha + 0.08, 0.95)
-        selected_alpha = 0.95 if is_dark else 0.28
-        text_color = "#f7f9fc" if is_dark else "#1f2a37"
-        selected_text_color = "#ffffff" if is_dark else "#0f172a"
-        border_color = "rgba(255, 255, 255, 0.2)" if is_dark else "rgba(15, 23, 42, 0.24)"
-        hover_border_color = "rgba(255, 255, 255, 0.34)" if is_dark else "rgba(15, 23, 42, 0.38)"
-        checked_border = "rgba(120, 200, 255, 0.95)" if is_dark else "rgba(31, 111, 235, 0.95)"
-        checked_background = self._hex_to_rgba(base_color, selected_alpha)
-        base_background = self._hex_to_rgba(base_color, base_alpha)
-        hover_background = self._hex_to_rgba(base_color, hover_alpha)
-        font_weight = 500
-        padding = "4px 36px 4px 10px"
-
-        if state == "include":
-            background = checked_background
-            hover_background = checked_background
-            current_text_color = selected_text_color
-            current_border_color = checked_border
-            font_weight = 650
-        elif state == "exclude":
-            background = "rgba(220, 38, 38, 0.72)" if is_dark else "rgba(220, 38, 38, 0.18)"
-            hover_background = "rgba(239, 68, 68, 0.78)" if is_dark else "rgba(220, 38, 38, 0.25)"
-            current_text_color = "#ffffff" if is_dark else "#7f1d1d"
-            current_border_color = "rgba(248, 113, 113, 0.95)" if is_dark else "rgba(185, 28, 28, 0.78)"
-            font_weight = 650
-        else:
-            background = base_background
-            current_text_color = text_color
-            current_border_color = border_color
-
-        return f"""
-            QPushButton {{
-                border: 1px solid {current_border_color};
-                border-radius: 6px;
-                padding: {padding};
-                background-color: {background};
-                color: {current_text_color};
-                text-align: left;
-                font-weight: {font_weight};
-            }}
-            QPushButton:hover {{
-                background-color: {hover_background};
-                border-color: {hover_border_color};
-            }}
+        """Suppress Qt's native button rendering; paintEvent handles everything."""
+        return """
+            QPushButton {
+                border: none;
+                border-radius: 0px;
+                padding: 0px;
+                background-color: transparent;
+                color: transparent;
+            }
         """
 
     def _build_chip_stylesheet(self, state: str) -> str:

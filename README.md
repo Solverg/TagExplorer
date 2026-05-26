@@ -12,12 +12,15 @@ without a hidden metadata database.
 
 ## Key Features
 
-- Native Windows 10/11 desktop UI with Acrylic/Mica styling through
-  `pywinstyles`.
+- Native Windows 10/11 desktop UI with application-owned dark and light themes,
+  independent of the Windows system color theme.
+- Folder navigation with quick access locations, drive roots, direct scans, and
+  recursive scans.
 - Fast tag filtering with AND / OR logic plus NOT exclusions.
 - Batch tag editing with conflict-safe renames.
 - Virtualized list and tile views for large folders.
 - Image and video previews using PyQt6 image readers and OpenCV.
+- Built-in full image viewer with keyboard navigation.
 - SQLCipher-backed local cache via `sqlcipher3-wheels`, with an explicit
   plaintext SQLite fallback warning when SQLCipher is unavailable.
 
@@ -26,12 +29,23 @@ without a hidden metadata database.
 Tag filtering is built around two active filter groups:
 
 - `Include`: click a tag pill to require that tag in the result set.
-- `Exclude`: click the small `🚫` button inside a tag pill to hide files with
+- `Exclude`: click the exclude control inside a tag pill to hide files with
   that tag.
 
-The `AND` / `OR` mode applies only to `Include` tags. `Exclude` tags are always
-applied as a final "not tagged with" filter, so you can search for files with
-`work` or `photo` while excluding files tagged `archive`.
+Use the `AND` / `OR` toggle to choose how `Include` tags combine. The mode
+applies only to `Include` tags. `Exclude` tags are always applied as a final
+"not tagged with" filter, so you can search for files with `work` or `photo`
+while excluding files tagged `archive`.
+
+## Appearance and Navigation
+
+TagExplorer uses its own dark theme by default instead of following the Windows
+system theme. Switch between dark and light themes via `View > Theme`; the
+selection is saved for future launches.
+
+In the full image viewer, use `Right` / `D` for the next image and `Left` / `A`
+for the previous image. A short key press moves by one image, while holding the
+key continues navigating after a short delay.
 
 ## Tech Stack
 
@@ -60,12 +74,12 @@ python main.py
 
 ## Release Build
 
-TagExplorer 1.1.0 is configured for a console-free onefile PyInstaller build.
+TagExplorer 1.2.0 is configured for a console-free onefile PyInstaller build.
 UPX is disabled for official builds to reduce antivirus false positives and
 keep crash analysis simpler.
 
 Use a clean 64-bit Windows Python 3.11 virtual environment for the official
-1.1.0 build because `requirements-release-win-amd64-py311.txt` is pinned for
+1.2.0 build because `requirements-release-win-amd64-py311.txt` is pinned for
 that interpreter and platform.
 
 ```powershell
@@ -83,20 +97,23 @@ The built executable should be attached to GitHub Releases as
 `TagExplorer.exe`. The in-app updater checks `Solverg/TagExplorer` and accepts
 release tags in `v1.2.3` or `1.2.3` format.
 
-For the 1.1.0 release, publish tag `v1.1.0` or `1.1.0`. A running
-TagExplorer 1.1.0 build should report no update while the latest GitHub Release
-is also 1.1.0; update installation can only be fully exercised once a newer
+For the 1.2.0 release, publish tag `v1.2.0` or `1.2.0`. A running
+TagExplorer 1.2.0 build should report no update while the latest GitHub Release
+is also 1.2.0; update installation can only be fully exercised once a newer
 release asset exists.
 
 The committed `requirements.txt` pins direct dependencies, and
 `requirements-release-win-amd64-py311.txt` pins the known transitive dependency
-set for the 1.1.0 Windows x86-64 / Python 3.11 release. For stronger supply
+set for the 1.2.0 Windows x86-64 / Python 3.11 release. For stronger supply
 chain integrity, regenerate a hash-locked file on the target Windows release
 machine:
 
 ```powershell
 python -m pip install pip-tools
-pip-compile --generate-hashes --output-file requirements-lock-win-amd64-py311.txt requirements-release-win-amd64-py311.txt
+pip-compile `
+  --generate-hashes `
+  --output-file requirements-lock-win-amd64-py311.txt `
+  requirements-release-win-amd64-py311.txt
 python -m pip install --require-hashes -r requirements-lock-win-amd64-py311.txt
 python -m PyInstaller --noconfirm --clean build.spec
 ```
@@ -130,7 +147,13 @@ python -m unittest discover -s tests -v
   correctly.
 - Exercise AND, OR, and NOT tag filtering.
 - Exercise file type filters for images, video, audio, and documents.
+- Switch between dark and light themes from `View > Theme`, restart the app,
+  and confirm the selected theme persists.
+- Confirm the UI remains readable when Windows uses non-default or custom color
+  theme settings.
 - Open image previews and the full image viewer.
+- In the full image viewer, confirm a short `Right` / `D` or `Left` / `A` key
+  press advances one image and holding the key continues navigation.
 - Open GIF previews and confirm GIFs loop in the full image viewer.
 - Open video previews to exercise OpenCV and the multiprocessing worker.
 - Batch add tags and batch remove tags, confirming the file view keeps its
@@ -146,9 +169,9 @@ python -m unittest discover -s tests -v
 - Confirm the application starts with `console=False`.
 - Confirm startup failures are logged to
   `%LOCALAPPDATA%\Solverg\TagExplorer\logs\startup.log`.
-- Check the executable Properties dialog contains version `1.1.0` metadata.
+- Check the executable Properties dialog contains version `1.2.0` metadata.
 - After the release exists on GitHub, run "Check for Updates" and confirm
-  1.1.0 reports no update; repeat update installation when a newer release is
+  1.2.0 reports no update; repeat update installation when a newer release is
   published.
 - Scan the release archive with Windows Defender or the intended AV baseline.
 

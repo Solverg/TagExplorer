@@ -112,38 +112,6 @@ class UpdateDialog(QDialog):
         self.setWindowTitle("Update Available")
         self.setFixedSize(420, 178)
 
-        self.setStyleSheet(
-            """
-            QDialog { background-color: #202020; }
-            QLabel { color: #f4f4f4; font-family: 'Segoe UI'; font-size: 13px; }
-            QPushButton {
-                background-color: rgba(255, 255, 255, 26);
-                border: 1px solid rgba(255, 255, 255, 70);
-                border-radius: 4px;
-                padding: 6px 16px;
-                color: white;
-            }
-            QPushButton:hover { background-color: rgba(255, 255, 255, 46); }
-            QPushButton#primary {
-                background-color: rgba(80, 140, 255, 170);
-                border: 1px solid rgba(130, 180, 255, 190);
-                font-weight: 600;
-            }
-            QPushButton#primary:hover { background-color: rgba(100, 160, 255, 190); }
-            QProgressBar {
-                border: 1px solid rgba(255, 255, 255, 55);
-                border-radius: 4px;
-                background-color: rgba(0, 0, 0, 90);
-                text-align: center;
-                color: white;
-            }
-            QProgressBar::chunk {
-                background-color: rgba(100, 160, 255, 190);
-                border-radius: 3px;
-            }
-            """
-        )
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(10)
@@ -212,4 +180,3 @@ class UpdateDialog(QDialog):
             creationflags=create_no_window,
         )
         os._exit(0)
-

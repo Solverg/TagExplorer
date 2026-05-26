@@ -101,11 +101,9 @@ class TagEditDialog(QDialog):
 
         layout = QVBoxLayout(self)
         self.file_label = QLabel(title_info)
-        self.file_label.setStyleSheet("color: #f4f4f4; font-weight: normal;")
         layout.addWidget(self.file_label)
 
         avail_label = QLabel("Available tags (Click to add/remove):")
-        avail_label.setStyleSheet("color: #f4f4f4; font-weight: normal;")
         layout.addWidget(avail_label)
 
         self.scroll_area = QScrollArea()
@@ -266,7 +264,6 @@ class TagEditDialog(QDialog):
 
         if not active_tags:
             no_tags_label = QLabel("No tags selected")
-            no_tags_label.setStyleSheet("color: #f4f4f4; font-weight: normal;")
             self.chips_layout.addWidget(no_tags_label)
             self.chips_layout.addStretch(1)
             return
@@ -292,7 +289,10 @@ class TagEditDialog(QDialog):
             badge_layout.addWidget(label)
             remove_button = QPushButton("×")
             remove_button.setFixedWidth(24)
-            remove_button.setStyleSheet("color: #f4f4f4; font-weight: normal; border: none; background: transparent;")
+            remove_color = "#f4f4f4" if is_dark else "#172033"
+            remove_button.setStyleSheet(
+                f"color: {remove_color}; font-weight: normal; border: none; background: transparent;"
+            )
             remove_button.clicked.connect(lambda _checked=False, t=tag: self._remove_chip(t))
             badge_layout.addWidget(remove_button)
             self.chips_layout.addWidget(badge)

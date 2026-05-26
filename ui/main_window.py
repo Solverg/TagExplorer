@@ -10,12 +10,12 @@ from typing import Any, Iterator
 import pywinstyles
 
 from PyQt6.QtCore import QDir, QThread, Qt, QStandardPaths, QStorageInfo, QTimer, pyqtSignal
-from PyQt6.QtGui import QFileSystemModel, QPainter
+from PyQt6.QtGui import QActionGroup, QFileSystemModel, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QFileDialog,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -40,6 +40,16 @@ from ui.file_list import FileListWidget
 from ui.file_tile import FileTileWidget
 from ui.preview_panel import PreviewPanel
 from ui.tag_panel import TagPanel
+from ui.theme import (
+    ThemeName,
+    apply_application_theme,
+    load_theme_name,
+    normalize_theme_name,
+    save_theme_name,
+    secondary_action_button_stylesheet,
+    theme_spec,
+)
+from ui.toggle_switch import ToggleSwitch
 from ui.type_filter import CollapsibleTypeFilter
 from ui.updater import UpdateChecker, UpdateDialog
 
@@ -202,22 +212,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("TagExplorer")
         self.resize(1300, 760)
-
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-
-        if os.name == "nt":
-            try:
-                pywinstyles.apply_style(self, "acrylic")
-            except Exception:
-                try:
-                    pywinstyles.apply_style(self, "mica")
-                except Exception:
-                    pass
-
-            try:
-                pywinstyles.change_header_color(self, color="#1e1e1e")
-            except Exception:
-                pass
+        self._theme_name: ThemeName = load_theme_name()
+        self._set_windows_title_bar_color(self._theme_name)
 
         self.cache = FileCache()
         self._pending_cache_warnings = list(self.cache.security_warnings)
@@ -254,6 +250,15 @@ class MainWindow(QMainWindow):
         self._show_cache_warnings()
         self.refresh_folder(force_rescan=False)
 
+    def _set_windows_title_bar_color(self, theme_name: ThemeName) -> None:
+        if os.name != "nt":
+            return
+
+        try:
+            pywinstyles.change_header_color(self, color=theme_spec(theme_name).title_bar)
+        except Exception:
+            pass
+
     def _build_menu(self) -> None:
         menu_bar = self.menuBar()
 
@@ -274,6 +279,22 @@ class MainWindow(QMainWindow):
         self.tile_view_action = view_menu.addAction("Tiles")
         self.tile_view_action.setCheckable(True)
         self.tile_view_action.triggered.connect(lambda: self._set_view_mode("tiles"))
+
+        view_menu.addSeparator()
+        theme_menu = view_menu.addMenu("Theme")
+        self.theme_action_group = QActionGroup(self)
+        self.theme_action_group.setExclusive(True)
+
+        self.dark_theme_action = theme_menu.addAction("Dark")
+        self.dark_theme_action.setCheckable(True)
+        self.theme_action_group.addAction(self.dark_theme_action)
+        self.dark_theme_action.triggered.connect(lambda _checked=False: self._set_theme("dark"))
+
+        self.light_theme_action = theme_menu.addAction("Light")
+        self.light_theme_action.setCheckable(True)
+        self.theme_action_group.addAction(self.light_theme_action)
+        self.light_theme_action.triggered.connect(lambda _checked=False: self._set_theme("light"))
+        self._sync_theme_menu_state()
 
         options_menu = menu_bar.addMenu("Options")
         self.tags_at_start_action = options_menu.addAction("Tags at the beginning")
@@ -301,23 +322,37 @@ class MainWindow(QMainWindow):
         buttons_layout = QHBoxLayout()
 
         self.open_folder_button = QPushButton("Open Folder")
+        self._style_left_action_button(self.open_folder_button)
         self.open_folder_button.clicked.connect(self.open_folder_dialog)
         buttons_layout.addWidget(self.open_folder_button)
 
         self.recursive_scan_button = QPushButton("Scan Folder Recursively")
+        self._style_left_action_button(self.recursive_scan_button)
         self.recursive_scan_button.clicked.connect(self.open_recursive_folder_dialog)
         buttons_layout.addWidget(self.recursive_scan_button)
 
         self.rescan_button = QPushButton("Rescan Current Folder")
+        self._style_left_action_button(self.rescan_button)
         self.rescan_button.clicked.connect(lambda: self.refresh_folder(force_rescan=True))
         buttons_layout.addWidget(self.rescan_button)
 
-        self.recursive_scan_switch = QCheckBox("Recursive mode")
+        recursive_mode_layout = QHBoxLayout()
+        recursive_mode_layout.setContentsMargins(2, 0, 2, 0)
+        recursive_mode_layout.setSpacing(8)
+
+        self.recursive_scan_label = QLabel("Recursive mode")
+        self.recursive_scan_label.setToolTip("Scan selected folder and all subfolders")
+        recursive_mode_layout.addWidget(self.recursive_scan_label)
+        recursive_mode_layout.addStretch(1)
+
+        self.recursive_scan_switch = ToggleSwitch()
+        self.recursive_scan_switch.setToolTip("Toggle recursive folder scanning")
         self.recursive_scan_switch.setChecked(False)
         self.recursive_scan_switch.toggled.connect(self._toggle_recursive_scan_mode)
+        recursive_mode_layout.addWidget(self.recursive_scan_switch)
 
         left_layout.addLayout(buttons_layout)
-        left_layout.addWidget(self.recursive_scan_switch)
+        left_layout.addLayout(recursive_mode_layout)
         self.places_tree = QTreeWidget()
         self.places_tree.setObjectName("PlacesTree")
         self.places_tree.setHeaderHidden(True)
@@ -328,6 +363,9 @@ class MainWindow(QMainWindow):
 
         self.folder_tree = QTreeView()
         self.folder_tree.setObjectName("FolderTree")
+        self.folder_tree.setRootIsDecorated(True)
+        self.folder_tree.setItemsExpandable(True)
+        self.folder_tree.setIndentation(18)
         self.folder_model = QFileSystemModel()
         self.folder_model.setFilter(QDir.Filter.AllDirs | QDir.Filter.NoDotAndDotDot)
         self.folder_model.setRootPath(str(self.current_folder))
@@ -337,11 +375,6 @@ class MainWindow(QMainWindow):
         self.folder_tree.setUniformRowHeights(True)
         for col in range(1, self.folder_model.columnCount()):
             self.folder_tree.hideColumn(col)
-
-        self.places_tree.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.folder_tree.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.places_tree.viewport().setAutoFillBackground(False)
-        self.folder_tree.viewport().setAutoFillBackground(False)
 
         self.left_nav_splitter = QSplitter(Qt.Orientation.Vertical)
         self.left_nav_splitter.setObjectName("LeftNavSplitter")
@@ -377,103 +410,63 @@ class MainWindow(QMainWindow):
         splitter.setSizes([260, 720, 320])
         splitter.setCollapsible(2, True)
 
-        glass_style = """
-            QMainWindow, QSplitter {
-                background: transparent;
-            }
+        self._apply_theme(self._theme_name, persist=False, announce=False)
 
-            #LeftPanel, #CenterPanel, #PreviewPanel {
-                background-color: rgba(24, 24, 24, 56);
-                border: 1px solid rgba(255, 255, 255, 38);
-                border-radius: 10px;
-            }
+    def _style_left_action_button(self, button: QPushButton) -> None:
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedHeight(28)
+        button.setStyleSheet(secondary_action_button_stylesheet(self._theme_name))
 
-            #LeftNavSplitter {
-                background: transparent;
-            }
+    def _set_theme(self, theme_name: ThemeName) -> None:
+        self._apply_theme(theme_name, persist=True, announce=True)
 
-            #LeftNavSplitter::handle {
-                background-color: rgba(255, 255, 255, 40);
-                border-radius: 2px;
-            }
+    def _apply_theme(
+        self,
+        theme_name: ThemeName,
+        *,
+        persist: bool,
+        announce: bool,
+    ) -> None:
+        self._theme_name = normalize_theme_name(theme_name)
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            apply_application_theme(app, self._theme_name)
+        if persist:
+            save_theme_name(self._theme_name)
 
-            #PlacesTree, #FolderTree {
-                background-color: rgba(255, 255, 255, 14);
-                border: 1px solid rgba(255, 255, 255, 26);
-                border-radius: 8px;
-                color: #f4f4f4;
-                padding: 4px;
-            }
+        self._set_windows_title_bar_color(self._theme_name)
+        self._sync_theme_menu_state()
+        self._refresh_themed_widgets()
+        self.update()
 
-            QTreeView::item, QTreeWidget::item {
-                padding: 3px;
-                border-radius: 4px;
-            }
+        if announce:
+            label = "Dark" if self._theme_name == "dark" else "Light"
+            self.statusBar().showMessage(f"{label} theme enabled", 3000)
 
-            QTreeView::item:selected, QTreeWidget::item:selected {
-                background-color: rgba(130, 180, 255, 70);
-                color: #ffffff;
-            }
+    def _sync_theme_menu_state(self) -> None:
+        if not hasattr(self, "dark_theme_action") or not hasattr(self, "light_theme_action"):
+            return
 
-            QPushButton {
-                background-color: rgba(255, 255, 255, 26);
-                border: 1px solid rgba(255, 255, 255, 70);
-                border-radius: 4px;
-                padding: 4px;
-                color: white;
-            }
+        self.dark_theme_action.blockSignals(True)
+        self.light_theme_action.blockSignals(True)
+        self.dark_theme_action.setChecked(self._theme_name == "dark")
+        self.light_theme_action.setChecked(self._theme_name == "light")
+        self.dark_theme_action.blockSignals(False)
+        self.light_theme_action.blockSignals(False)
 
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 46);
-            }
+    def _refresh_themed_widgets(self) -> None:
+        for button_name in ("open_folder_button", "recursive_scan_button", "rescan_button"):
+            button = getattr(self, button_name, None)
+            if isinstance(button, QPushButton):
+                button.setStyleSheet(secondary_action_button_stylesheet(self._theme_name))
 
-            QMenuBar {
-                background-color: rgba(30, 30, 30, 200);
-                color: #f4f4f4;
-                font-weight: normal;
-            }
-
-            QMenuBar::item:selected {
-                background-color: rgba(255, 255, 255, 40);
-            }
-
-            QMenu {
-                background-color: #2a2a2a;
-                color: #f4f4f4;
-                border: 1px solid rgba(255, 255, 255, 40);
-                font-weight: normal;
-            }
-
-            QMenu::item {
-                padding: 6px 28px 6px 12px;
-            }
-
-            QMenu::item:selected {
-                background-color: rgba(130, 180, 255, 100);
-            }
-
-            QCheckBox {
-                color: #f4f4f4;
-                font-weight: normal;
-            }
-
-            QLabel {
-                color: #f4f4f4;
-                font-weight: normal;
-            }
-
-            QRadioButton {
-                color: #f4f4f4;
-                font-weight: normal;
-            }
-
-            QStatusBar {
-                color: #f4f4f4;
-                font-weight: normal;
-            }
-        """
-
-        self.setStyleSheet(glass_style)
+        if hasattr(self, "tag_panel"):
+            self.tag_panel.apply_theme(self._theme_name)
+        if hasattr(self, "type_filter"):
+            self.type_filter.apply_theme(self._theme_name)
+        if hasattr(self, "file_tile_widget"):
+            self.file_tile_widget.apply_theme(self._theme_name)
 
     def _connect_signals(self) -> None:
         self.places_tree.itemClicked.connect(self._on_place_clicked)
@@ -678,7 +671,12 @@ class MainWindow(QMainWindow):
             return False
 
     def open_folder_dialog(self) -> None:
-        selected = QFileDialog.getExistingDirectory(self, "Open Folder", str(self.current_folder))
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Open Folder",
+            str(self.current_folder),
+            QFileDialog.Option.DontUseNativeDialog,
+        )
         if not selected:
             return
 
@@ -690,6 +688,7 @@ class MainWindow(QMainWindow):
             self,
             "Scan Folder Recursively",
             str(self.current_folder),
+            QFileDialog.Option.DontUseNativeDialog,
         )
         if not selected:
             return
@@ -913,7 +912,7 @@ class MainWindow(QMainWindow):
             return
 
         app = QApplication.instance()
-        current_version = app.applicationVersion() if app is not None else "1.1.0"
+        current_version = app.applicationVersion() if app is not None else "1.2.0"
         self._manual_update_check = manual
         if manual:
             self.statusBar().showMessage("Checking for updates...")

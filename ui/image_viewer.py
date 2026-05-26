@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QSize, QTimer, Qt
 from PyQt6.QtGui import QCloseEvent, QImageReader, QKeyEvent, QMovie, QPixmap
 from PyQt6.QtWidgets import QDialog, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
@@ -18,6 +18,9 @@ def get_supported_image_suffixes() -> set[str]:
 
 class ImageViewerDialog(QDialog):
     """A dialog for viewing images sequentially as they appear in the file list."""
+
+    _NAVIGATION_REPEAT_DELAY_MS = 450
+    _NAVIGATION_REPEAT_INTERVAL_MS = 120
 
     def __init__(self, paths: list[Path], start_path: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -41,6 +44,17 @@ class ImageViewerDialog(QDialog):
         self._current_pixmap: QPixmap | None = None
         self._current_movie: QMovie | None = None
         self._movie_source_size: QSize | None = None
+        self._held_navigation_key: int | None = None
+        self._navigation_direction = 0
+
+        self._repeat_delay_timer = QTimer(self)
+        self._repeat_delay_timer.setSingleShot(True)
+        self._repeat_delay_timer.setInterval(self._NAVIGATION_REPEAT_DELAY_MS)
+        self._repeat_delay_timer.timeout.connect(self._start_navigation_repeat)
+
+        self._repeat_timer = QTimer(self)
+        self._repeat_timer.setInterval(self._NAVIGATION_REPEAT_INTERVAL_MS)
+        self._repeat_timer.timeout.connect(self._repeat_navigation)
 
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -158,20 +172,78 @@ class ImageViewerDialog(QDialog):
             self._update_pixmap_scale()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
+        self._stop_navigation_repeat()
         self._clear_current_media()
         super().closeEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
-        if event.key() in (Qt.Key.Key_Right, Qt.Key.Key_D):
-            self._next_image()
+        direction = self._navigation_direction_for_key(event.key())
+        if direction != 0:
+            event.accept()
+            if event.isAutoRepeat():
+                return
+
+            if self._held_navigation_key is not None:
+                if self._held_navigation_key == event.key():
+                    return
+                self._stop_navigation_repeat()
+
+            self._held_navigation_key = event.key()
+            self._navigation_direction = direction
+            if self._navigate(direction):
+                self._repeat_delay_timer.start()
             return
-        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_A):
-            self._prev_image()
-            return
+
         if event.key() == Qt.Key.Key_Escape:
+            self._stop_navigation_repeat()
             self.close()
             return
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
+        if self._navigation_direction_for_key(event.key()) != 0:
+            event.accept()
+            if event.isAutoRepeat():
+                return
+            if self._held_navigation_key == event.key():
+                self._stop_navigation_repeat()
+            return
+        super().keyReleaseEvent(event)
+
+    @staticmethod
+    def _navigation_direction_for_key(key: int) -> int:
+        if key in (Qt.Key.Key_Right, Qt.Key.Key_D):
+            return 1
+        if key in (Qt.Key.Key_Left, Qt.Key.Key_A):
+            return -1
+        return 0
+
+    def _start_navigation_repeat(self) -> None:
+        if self._held_navigation_key is None:
+            return
+        self._repeat_navigation()
+        if self._held_navigation_key is not None:
+            self._repeat_timer.start()
+
+    def _repeat_navigation(self) -> None:
+        if self._held_navigation_key is None:
+            return
+        if not self._navigate(self._navigation_direction):
+            self._stop_navigation_repeat()
+
+    def _stop_navigation_repeat(self) -> None:
+        self._repeat_delay_timer.stop()
+        self._repeat_timer.stop()
+        self._held_navigation_key = None
+        self._navigation_direction = 0
+
+    def _navigate(self, direction: int) -> bool:
+        old_index = self.current_index
+        if direction > 0:
+            self._next_image()
+        elif direction < 0:
+            self._prev_image()
+        return self.current_index != old_index
 
     def _next_image(self) -> None:
         if self.current_index < len(self.image_paths) - 1:

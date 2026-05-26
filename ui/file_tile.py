@@ -42,6 +42,7 @@ from core.tags import TagValidationError, build_tagged_filename, normalize_tags,
 from ui.file_actions import open_path_with_shell, reveal_path_in_explorer
 from ui.file_list import TagEditDialog
 from ui.image_viewer import ImageViewerDialog, get_supported_image_suffixes
+from ui.theme import DEFAULT_THEME, ThemeName, normalize_theme_name, theme_spec
 
 TILE_SIZE = 128
 TILE_W = 140
@@ -399,6 +400,7 @@ class SectionWidget(QWidget):
 
     def __init__(self, label: str, shared_thumb_mgr: ThumbnailManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._theme_name: ThemeName = DEFAULT_THEME
         self._thumb_mgr = shared_thumb_mgr
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.is_collapsed = False
@@ -420,15 +422,14 @@ class SectionWidget(QWidget):
         self._toggle_btn.setFixedSize(24, 24)
         self._toggle_btn.clicked.connect(self.toggle_collapse)
 
-        lbl = QLabel(label)
-        font = QFont(lbl.font())
+        self._label = QLabel(label)
+        font = QFont(self._label.font())
         font.setBold(True)
-        lbl.setFont(font)
-        lbl.setStyleSheet("color: #f4f4f4;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self._label.setFont(font)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
         header_layout.addWidget(self._toggle_btn)
-        header_layout.addWidget(lbl)
+        header_layout.addWidget(self._label)
         header_layout.addStretch(1)
 
         self._header.mousePressEvent = self._on_header_clicked
@@ -465,13 +466,36 @@ class SectionWidget(QWidget):
 
         self._empty_label = QLabel("No files")
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_label.setStyleSheet("color: gray; padding: 12px;")
         self._empty_label.hide()
 
         layout.addWidget(self._header)
         layout.addWidget(self._line)
         layout.addWidget(self._empty_label)
         layout.addWidget(self._list)
+        self.apply_theme(self._theme_name)
+
+    def apply_theme(self, theme_name: ThemeName) -> None:
+        self._theme_name = normalize_theme_name(theme_name)
+        spec = theme_spec(self._theme_name)
+        self._label.setStyleSheet(f"color: {spec.text};")
+        self._empty_label.setStyleSheet(f"color: {spec.muted_text}; padding: 12px;")
+        self._toggle_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                border: none;
+                background: transparent;
+                color: {spec.text};
+                padding: 0px;
+            }}
+            QPushButton:hover {{
+                background-color: {spec.control_hover};
+                border-radius: 4px;
+            }}
+            """
+        )
+        self._line.setStyleSheet(f"background-color: {spec.separator};")
+        self._list.viewport().update()
+        self.update()
 
     @property
     def model(self) -> TileModel:
@@ -611,6 +635,7 @@ class FileTileWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._theme_name: ThemeName = DEFAULT_THEME
 
         self._shared_model = TileModel(self)   # фиктивная модель только для кэша
         self.thumb_mgr = ThumbnailManager(self._shared_model)
@@ -661,6 +686,14 @@ class FileTileWidget(QWidget):
         self._thumb_request_timer.timeout.connect(self._request_visible_thumbs)
 
         self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        self.apply_theme(self._theme_name)
+
+    def apply_theme(self, theme_name: ThemeName) -> None:
+        self._theme_name = normalize_theme_name(theme_name)
+        self._sec_tagged.apply_theme(self._theme_name)
+        self._sec_untagged.apply_theme(self._theme_name)
+        self._scroll.viewport().update()
+        self.update()
 
     def scroll_position(self) -> int:
         return self._scroll.verticalScrollBar().value()

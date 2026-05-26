@@ -16,7 +16,7 @@ from core.updater import apply_update_and_relaunch
 
 APP_NAME = "TagExplorer"
 APP_ORGANIZATION = "Solverg"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 
 def _log_directory() -> Path:
@@ -70,11 +70,13 @@ def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
 
     from PyQt6.QtWidgets import QApplication
+    from ui.theme import apply_application_theme, load_theme_name
 
     app = QApplication(args)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(APP_ORGANIZATION)
     app.setApplicationVersion(APP_VERSION)
+    apply_application_theme(app, load_theme_name())
 
     log_path = _setup_logging()
     logging.info("Starting %s %s", APP_NAME, APP_VERSION)

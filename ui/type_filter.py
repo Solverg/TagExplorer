@@ -12,6 +12,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ui.theme import DEFAULT_THEME, ThemeName, normalize_theme_name, type_filter_button_stylesheet
+
 
 class CollapsibleTypeFilter(QWidget):
     """A collapsible panel containing checkboxes for filtering by file type."""
@@ -20,29 +22,14 @@ class CollapsibleTypeFilter(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._theme_name: ThemeName = DEFAULT_THEME
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 5, 0, 5)
         self.layout.setSpacing(4)
 
         self.toggle_btn = QPushButton("▶ File types")
         self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggle_btn.setStyleSheet(
-            """
-            QPushButton {
-                text-align: left;
-                border: none;
-                background: transparent;
-                font-weight: bold;
-                color: #f4f4f4;
-                padding: 4px;
-            }
-            QPushButton:hover {
-                color: #ffffff;
-                background: rgba(255, 255, 255, 10);
-                border-radius: 4px;
-            }
-        """
-        )
+        self.toggle_btn.setStyleSheet(type_filter_button_stylesheet(self._theme_name))
         self.toggle_btn.clicked.connect(self.toggle_content)
         self.layout.addWidget(self.toggle_btn)
 
@@ -68,6 +55,10 @@ class CollapsibleTypeFilter(QWidget):
 
         self.content_layout.addStretch(1)
         self.layout.addWidget(self.content_widget)
+
+    def apply_theme(self, theme_name: ThemeName) -> None:
+        self._theme_name = normalize_theme_name(theme_name)
+        self.toggle_btn.setStyleSheet(type_filter_button_stylesheet(self._theme_name))
 
     def toggle_content(self) -> None:
         """Show/hide collapsible content."""
