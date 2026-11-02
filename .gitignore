@@ -10,6 +10,19 @@ env/
 .codex-python/
 .codex-python.zip
 
+# Local agent instructions and configuration
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.agents/
+.codex/
+.claude/
+
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+
 # Local tooling caches
 .pytest_cache/
 .mypy_cache/
