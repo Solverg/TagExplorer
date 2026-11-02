@@ -16,8 +16,6 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from PyQt6.QtCore import QStandardPaths
-
 from core.tags import normalize_tags
 
 logger = logging.getLogger(__name__)
@@ -56,6 +54,8 @@ if sqlite_engine is None:
 
 def _get_db_path() -> Path:
     """Return the path to the SQLite database file."""
+    from PyQt6.QtCore import QStandardPaths
+
     location = QStandardPaths.writableLocation(
         QStandardPaths.StandardLocation.AppDataLocation
     )
@@ -166,6 +166,17 @@ class FileCache:
         if HAS_CIPHER:
             return self._open_cipher_connection(recover=recover)
 
+        if self.db_path.exists():
+            try:
+                with self.db_path.open("rb") as handle:
+                    header = handle.read(16)
+            except OSError as exc:
+                raise CacheDatabaseError(f"Could not inspect cache database: {exc}") from exc
+            if header and header != b"SQLite format 3\x00":
+                raise CacheDatabaseError(
+                    "The existing cache is not plaintext SQLite and may be encrypted. "
+                    "Install SQLCipher to open it; the original cache was retained."
+                )
         try:
             conn = sqlite_engine.connect(str(self.db_path), timeout=BUSY_TIMEOUT_MS / 1000)
             conn.row_factory = sqlite_engine.Row
@@ -179,6 +190,14 @@ class FileCache:
             raise CacheDatabaseError(f"Could not open cache database: {exc}") from exc
 
     def _open_cipher_connection(self, *, recover: bool) -> sqlite_engine.Connection:
+        if self.db_path.exists():
+            try:
+                with self.db_path.open("rb") as handle:
+                    plaintext = handle.read(16) == b"SQLite format 3\x00"
+            except OSError as exc:
+                raise CacheDatabaseError(f"Could not inspect cache database: {exc}") from exc
+            if plaintext:
+                self._migrate_plaintext_database()
         last_error: sqlite_engine.DatabaseError | None = None
         compatibility_modes: tuple[int | None, ...] = (None, 3)
 
@@ -220,6 +239,44 @@ class FileCache:
         self._try_set_wal(conn)
         if self.db_path.exists():
             _restrict_path_permissions(self.db_path, is_dir=False)
+
+    def _migrate_plaintext_database(self) -> None:
+        """Export an earlier SQLite fallback database into SQLCipher in place."""
+        new_path = self.db_path.with_suffix(f".migrating.{uuid4().hex}.db")
+        conn = None
+        check = None
+        try:
+            conn = sqlite_engine.connect(str(self.db_path), timeout=BUSY_TIMEOUT_MS / 1000)
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            mode = conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0]
+            if str(mode).lower() != "delete":
+                raise CacheDatabaseError("Could not checkpoint the plaintext cache database.")
+            original = self.db_path.stat()
+            conn.execute("ATTACH DATABASE ? AS migrated KEY " + _quote_sqlcipher_key(self._STATIC_KEY),
+                         (str(new_path),))
+            conn.execute("SELECT sqlcipher_export('migrated')")
+            conn.execute("DETACH DATABASE migrated")
+            conn.close()
+            conn = None
+            check = sqlite_engine.connect(str(new_path), timeout=BUSY_TIMEOUT_MS / 1000)
+            check.execute("PRAGMA key = " + _quote_sqlcipher_key(self._STATIC_KEY))
+            self._validate_cipher_key(check)
+            if check.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise CacheDatabaseError("The migrated cache failed its integrity check.")
+            check.close()
+            check = None
+            current = self.db_path.stat()
+            if (original.st_size, original.st_mtime_ns, original.st_ino) != (
+                    current.st_size, current.st_mtime_ns, current.st_ino):
+                raise CacheDatabaseError("The plaintext cache changed during migration.")
+            os.replace(new_path, self.db_path)
+            _restrict_path_permissions(self.db_path, is_dir=False)
+        except (OSError, sqlite_engine.DatabaseError, CacheDatabaseError) as exc:
+            raise CacheDatabaseError(f"Could not migrate plaintext cache; original was retained: {exc}") from exc
+        finally:
+            self._close_quietly(check)
+            self._close_quietly(conn)
+            self._delete_if_exists(new_path)
 
     def _migrate_legacy_cipher_database(self, conn: sqlite_engine.Connection) -> bool:
         """Re-encrypt a SQLCipher 3-compatible cache into the current format."""
@@ -492,7 +549,7 @@ class FileCache:
         now = time.time()
         conn.execute(
             """
-            INSERT OR REPLACE INTO thumbnails(path, thumbnail, bytes, created_at, last_accessed)
+            INSERT OR IGNORE INTO thumbnails(path, thumbnail, bytes, created_at, last_accessed)
             SELECT path, thumbnail, length(thumbnail), ?, ?
             FROM files
             WHERE thumbnail IS NOT NULL
@@ -638,7 +695,8 @@ class FileCache:
         try:
             cursor = conn.execute(
                 """
-                SELECT path, filename, tags, modified_time, file_type
+                SELECT path, filename, tags, modified_time, file_type,
+                       size, modified_time_ns, device_id, inode
                 FROM files
                 WHERE folder = ?
                 ORDER BY filename COLLATE NOCASE
@@ -660,7 +718,8 @@ class FileCache:
         try:
             cursor = conn.execute(
                 """
-                SELECT path, filename, tags, modified_time, file_type
+                SELECT path, filename, tags, modified_time, file_type,
+                       size, modified_time_ns, device_id, inode
                 FROM files
                 WHERE path LIKE ? ESCAPE '\\'
                 ORDER BY path COLLATE NOCASE
@@ -682,6 +741,10 @@ class FileCache:
             "tags": self._load_tags(row["tags"], path=path),
             "modified_time": row["modified_time"],
             "file_type": row["file_type"],
+            "size": row["size"],
+            "modified_time_ns": row["modified_time_ns"],
+            "device_id": self._file_id_from_db(row["device_id"]),
+            "inode": self._file_id_from_db(row["inode"]),
         }
 
     @staticmethod
@@ -717,8 +780,8 @@ class FileCache:
                     info["file_type"],
                     self._optional_int(info.get("size")),
                     self._optional_int(info.get("modified_time_ns")),
-                    self._optional_int(info.get("device_id")),
-                    self._optional_int(info.get("inode")),
+                    self._file_id_to_db(info.get("device_id")),
+                    self._file_id_to_db(info.get("inode")),
                 )
             )
 
@@ -772,6 +835,23 @@ class FileCache:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @classmethod
+    def _file_id_to_db(cls, value: Any) -> int | None:
+        """Represent unsigned 64-bit Windows file IDs as SQLite integers."""
+        number = cls._optional_int(value)
+        if number is not None and (1 << 63) <= number < (1 << 64):
+            return number - (1 << 64)
+        return number
+
+    @staticmethod
+    def _file_id_from_db(value: int | None) -> int | None:
+        if value is None:
+            return None
+        # Old Windows scans used DirEntry.stat(), which reports zero for IDs.
+        if os.name == "nt" and value == 0:
+            return None
+        return value + (1 << 64) if value < 0 else value
 
     def _delete_replaced_file_thumbnails(
         self,
@@ -881,7 +961,8 @@ class FileCache:
         conn = self._conn()
         try:
             cursor = conn.execute(
-                "SELECT path, filename, tags, modified_time, file_type FROM files WHERE path = ?",
+                "SELECT path, filename, tags, modified_time, file_type, "
+                "size, modified_time_ns, device_id, inode FROM files WHERE path = ?",
                 (path.resolve().as_posix(),),
             )
         except sqlite_engine.DatabaseError as exc:
@@ -893,6 +974,68 @@ class FileCache:
         if row is None:
             return None
         return self._row_to_record(row)
+
+    def migrate_legacy_scan_caches(self, cache_dir: Path, should_cancel=None) -> list[str]:
+        """Import old recursive JSON caches, then remove only successfully imported files."""
+        warnings: list[str] = []
+        if not cache_dir.is_dir() or cache_dir.is_symlink():
+            return warnings
+        for source in cache_dir.glob("scan_*.json"):
+            if should_cancel and should_cancel():
+                break
+            try:
+                before = source.lstat()
+                if (not stat.S_ISREG(before.st_mode)
+                        or getattr(before, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                    continue
+                with source.open("r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                if (not isinstance(payload, dict)
+                        or not isinstance(payload.get("root_folder"), str)
+                        or not isinstance(payload.get("scanned_at"), (int, float))
+                        or not isinstance(payload.get("records"), list)):
+                    raise ValueError("unrecognized cache format")
+                rows = []
+                for record in payload["records"]:
+                    if should_cancel and should_cancel():
+                        return warnings
+                    if (not isinstance(record, dict)
+                            or not isinstance(record.get("path"), str)
+                            or not Path(record["path"]).is_absolute()
+                            or not isinstance(record.get("filename"), str)
+                            or not isinstance(record.get("tags"), list)
+                            or not isinstance(record.get("modified_time"), (int, float))
+                            or not isinstance(record.get("file_type"), str)):
+                        raise ValueError("invalid file record")
+                    path = Path(record["path"])
+                    rows.append((path.as_posix(), path.parent.as_posix(), record["filename"],
+                                 json.dumps(self._normalize_tags(record["tags"])),
+                                 record["modified_time"], record["file_type"],
+                                 self._optional_int(record.get("size")),
+                                 self._optional_int(record.get("modified_time_ns")),
+                                 self._file_id_to_db(record.get("device_id")),
+                                 self._file_id_to_db(record.get("inode"))))
+                conn = self._conn()
+                try:
+                    conn.executemany(
+                        "INSERT INTO files(path, folder, filename, tags, modified_time, file_type, "
+                        "size, modified_time_ns, device_id, inode) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                        "ON CONFLICT(path) DO NOTHING", rows,
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                after = source.lstat()
+                if (before.st_size, before.st_mtime_ns, before.st_ino) != (
+                        after.st_size, after.st_mtime_ns, after.st_ino):
+                    raise OSError("cache changed during migration")
+                source.unlink()
+            except (OSError, ValueError, TypeError, OverflowError, sqlite_engine.DatabaseError) as exc:
+                message = f"Could not migrate legacy cache {source}: {exc}"
+                logger.warning(message)
+                warnings.append(message)
+        return warnings
 
     def clear_folder(self, folder: Path) -> None:
         folder_text = folder.resolve().as_posix()

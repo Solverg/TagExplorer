@@ -37,6 +37,12 @@ applies only to `Include` tags. `Exclude` tags are always applied as a final
 "not tagged with" filter, so you can search for files with `work` or `photo`
 while excluding files tagged `archive`.
 
+Files without tags are hidden when an `Include` filter is active. Filters are
+retained when the current folder is rescanned and reset when navigating to a
+different folder. Recursive scans include hidden folders and folders with
+names such as `Windows` or `node_modules`, while avoiding directory links and
+Windows reparse points. Scanning large trees may therefore take longer.
+
 ## Appearance and Navigation
 
 TagExplorer uses its own dark theme by default instead of following the Windows
@@ -53,7 +59,7 @@ key continues navigating after a short delay.
 - PyQt6
 - SQLCipher through `sqlcipher3-wheels`
 - OpenCV through `opencv-python`
-- PyInstaller onefile Windows release builds
+- PyInstaller onefile Windows application and Inno Setup installer
 
 ## Installation
 
@@ -74,37 +80,41 @@ python main.py
 
 ## Release Build
 
-TagExplorer 1.2.0 is configured for a console-free onefile PyInstaller build.
-UPX is disabled for official builds to reduce antivirus false positives and
-keep crash analysis simpler.
-
-Use a clean 64-bit Windows Python 3.11 virtual environment for the official
-1.2.0 build because `requirements-release-win-amd64-py311.txt` is pinned for
-that interpreter and platform.
+Use a clean 64-bit Windows Python 3.11 virtual environment and Inno Setup 6
+to build the installer. The build also requires the Windows .NET Framework 4
+C# compiler. UPX is disabled for the application build.
 
 ```powershell
 python -m pip install -r requirements-release-win-amd64-py311.txt
-python -m PyInstaller --noconfirm --clean build.spec
+.\tools\build-installer.ps1 -Python .\.venv\Scripts\python.exe
 ```
 
-The executable is generated as `dist\TagExplorer.exe`. Release archives should
-also include:
+The build writes two required release assets to `dist\installer`:
 
-- `LICENSE`
-- `THIRD_PARTY_NOTICES.md`
+- `TagExplorer-Setup.exe`: the installer for new users.
+- `TagExplorer.exe`: a compatibility bridge for the updater in portable 1.2.0.
 
-The built executable should be attached to GitHub Releases as
-`TagExplorer.exe`. The in-app updater checks `Solverg/TagExplorer` and accepts
-release tags in `v1.2.3` or `1.2.3` format.
+Attach **both files with these exact names** to each GitHub Release. The old
+updater only recognizes `TagExplorer.exe`; that file is the bridge, not the
+installed application. It opens the installer and retains the old executable
+if installation is cancelled or fails. After a successful installation and
+health check, it starts the installed application and removes the portable
+executable. Installation requests administrator approval and defaults to
+`%ProgramFiles%\TagExplorer`.
 
-For the 1.2.0 release, publish tag `v1.2.0` or `1.2.0`. A running
-TagExplorer 1.2.0 build should report no update while the latest GitHub Release
-is also 1.2.0; update installation can only be fully exercised once a newer
-release asset exists.
+The already-released 1.2.0 updater must be able to write beside its portable
+EXE to stage `TagExplorer_new.exe`; it cannot be fixed retroactively. If that
+directory is read-only, run `TagExplorer-Setup.exe` manually and remove the
+old portable file after verifying the installation. A manual installation
+cannot automatically locate every portable copy.
+
+The in-app updater checks `Solverg/TagExplorer` and accepts release tags in
+`v1.2.3` or `1.2.3` format. The release tag must match `APP_VERSION` in
+`main.py` and the version resource in `version_info.txt`.
 
 The committed `requirements.txt` pins direct dependencies, and
 `requirements-release-win-amd64-py311.txt` pins the known transitive dependency
-set for the 1.2.0 Windows x86-64 / Python 3.11 release. For stronger supply
+set for the Windows x86-64 / Python 3.11 release. For stronger supply
 chain integrity, regenerate a hash-locked file on the target Windows release
 machine:
 
@@ -115,7 +125,7 @@ pip-compile `
   --output-file requirements-lock-win-amd64-py311.txt `
   requirements-release-win-amd64-py311.txt
 python -m pip install --require-hashes -r requirements-lock-win-amd64-py311.txt
-python -m PyInstaller --noconfirm --clean build.spec
+.\tools\build-installer.ps1 -Python .\.venv\Scripts\python.exe
 ```
 
 ## Pre-Release Checks
@@ -125,16 +135,25 @@ Run these before building or publishing:
 ```powershell
 python main.py --healthcheck
 python -m unittest discover -s tests -v
+python tools/smoke-installer.py
 ```
+
+The installer smoke test builds an isolated non-admin test variant. It does
+not replace the manual administrator/UAC and real 1.2.0 update checks below.
 
 ## Release Smoke Checklist
 
 - Build inside a clean Windows virtual environment.
 - Confirm `python main.py` launches from source in the release environment.
-- Start `dist\TagExplorer.exe` outside the repository directory.
-- Start the exe from a path containing spaces and non-ASCII characters.
-- Confirm the first onefile startup completes after extraction to the temporary
-  directory.
+- Install `TagExplorer-Setup.exe` in a clean Windows account and verify the
+  shortcuts, uninstall entry, and launch from Program Files.
+- Upgrade a real 1.2.0 standalone executable through its in-app updater,
+  including from a path with spaces and non-ASCII characters. Confirm the old
+  executable is removed only after installation succeeds.
+- Cancel the UAC prompt and installer separately, and verify the standalone
+  executable remains usable. Exercise a subsequent update of the installed app.
+- Confirm settings and cache remain available after the upgrade and that
+  uninstalling leaves user data intact.
 - Confirm SQLCipher is active and cache creation does not fall back to
   plaintext SQLite.
 - Choose a folder through the UI.
@@ -169,10 +188,9 @@ python -m unittest discover -s tests -v
 - Confirm the application starts with `console=False`.
 - Confirm startup failures are logged to
   `%LOCALAPPDATA%\Solverg\TagExplorer\logs\startup.log`.
-- Check the executable Properties dialog contains version `1.2.0` metadata.
-- After the release exists on GitHub, run "Check for Updates" and confirm
-  1.2.0 reports no update; repeat update installation when a newer release is
-  published.
+- Check the installed executable Properties dialog contains the release version.
+- After the release exists on GitHub, confirm the installed version reports no
+  update; repeat update installation when a newer release is published.
 - Scan the release archive with Windows Defender or the intended AV baseline.
 
 ## SQLCipher on Windows
@@ -183,6 +201,14 @@ source-distributed and can reintroduce local SQLCipher compilation issues.
 
 If SQLCipher cannot be imported, TagExplorer falls back to standard `sqlite3`
 and warns that the cache is unencrypted.
+
+On upgrade, legacy recursive JSON caches are imported into the current cache
+without overwriting existing records. Successfully imported JSON files are
+removed; unreadable files are retained and reported. The cache database schema
+is upgraded in place, preserving records and thumbnails. If SQLCipher becomes
+available after a plaintext fallback was used, that database is exported to an
+encrypted database before use. If SQLCipher is unavailable for an existing
+encrypted database, the app retains the database and reports the problem.
 
 ## PyInstaller Notes
 

@@ -10,6 +10,17 @@ from core.filter_engine import filter_files  # noqa: E402
 
 
 class FilterFilesTest(unittest.TestCase):
+    def test_inclusion_hides_untagged_in_and_and_or_modes(self) -> None:
+        records = [
+            {"filename": "work.txt", "tags": ["work"], "file_type": "document"},
+            {"filename": "plain.txt", "tags": [], "file_type": "document"},
+        ]
+        for mode in ("AND", "OR"):
+            with self.subTest(mode=mode):
+                tagged, untagged = filter_files(records, ["work"], mode)
+                self.assertEqual([record["filename"] for record in tagged], ["work.txt"])
+                self.assertEqual(untagged, [])
+
     def test_or_filter_excludes_records_with_blocked_tags(self) -> None:
         records = [
             {"filename": "work.txt", "tags": ["work"], "file_type": "document"},

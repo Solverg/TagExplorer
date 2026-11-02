@@ -506,8 +506,12 @@ class TagPanel(QWidget):
         self._update_active_filters()
         self.mode_toggle.update()
 
-    def set_tags(self, tags: list[str]) -> None:
+    def set_tags(self, tags: list[str], preserve_selection: bool = True) -> None:
         """Render sorted unique tags as selectable rounded buttons."""
+        active_states = {
+            tag: state for tag, state in self._tag_states.items()
+            if preserve_selection and state in {"include", "exclude"}
+        }
         while self.tags_layout.count():
             item = self.tags_layout.takeAt(0)
             widget = item.widget()
@@ -518,7 +522,7 @@ class TagPanel(QWidget):
         self._tag_states.clear()
 
         columns = 3
-        for index, tag in enumerate(sorted(set(tags), key=tag_sort_key)):
+        for index, tag in enumerate(sorted(set(tags) | active_states.keys(), key=tag_sort_key)):
             button = TagFilterButton(tag)
             button.setCheckable(True)
             button.setMinimumHeight(28)
@@ -526,8 +530,10 @@ class TagPanel(QWidget):
             button.exclude_clicked.connect(lambda tag=tag: self._on_tag_exclude_clicked(tag))
             base_color = self._BASE_TAG_COLORS[index % len(self._BASE_TAG_COLORS)]
             self._tag_base_colors[tag] = base_color
-            self._tag_states[tag] = "none"
-            button.setProperty("tagState", "none")
+            state = active_states.get(tag, "none")
+            self._tag_states[tag] = state
+            button.setChecked(state != "none")
+            button.setProperty("tagState", state)
             button.setProperty("baseColor", base_color)
             button.setStyleSheet(self._build_tag_stylesheet(base_color, "none"))
             row = index // columns
@@ -535,7 +541,7 @@ class TagPanel(QWidget):
             self.tags_layout.addWidget(button, row, col)
             self._tag_buttons[tag] = button
 
-        self._update_active_filters()
+        self._reorder_tags()
         self._emit_state()
 
     def changeEvent(self, event) -> None:

@@ -12,6 +12,7 @@ from typing import Any
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
+    QApplication,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -169,14 +170,22 @@ class UpdateDialog(QDialog):
             self.cancel_button.setText("Close")
             return
 
-        self.info_label.setText("Installing update and restarting...")
+        self.info_label.setText("Closing TagExplorer and starting the installer...")
         current_exe = sys.executable
         exe_dir = os.path.dirname(current_exe)
         create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-        subprocess.Popen(
-            [new_exe_path, "--apply-update", current_exe],
-            cwd=exe_dir,
-            creationflags=create_no_window,
-        )
-        os._exit(0)
+        main_window = self.parentWidget()
+        if main_window is not None and not main_window.close():
+            self.show_error("Could not close TagExplorer. Wait for the scan to finish and retry.")
+            return
+        try:
+            subprocess.Popen(
+                [new_exe_path, "--apply-update", current_exe],
+                cwd=exe_dir,
+                creationflags=create_no_window,
+            )
+        except OSError as exc:
+            self.show_error(f"Could not start the installer; reopen TagExplorer to retry: {exc}")
+            return
+        QApplication.quit()

@@ -16,7 +16,7 @@ from core.updater import apply_update_and_relaunch
 
 APP_NAME = "TagExplorer"
 APP_ORGANIZATION = "Solverg"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 
 def _log_directory() -> Path:
@@ -63,7 +63,30 @@ def main(argv: list[str] | None = None) -> int:
         return apply_update_and_relaunch(args)
 
     if "--healthcheck" in args:
-        print("healthcheck:ok")
+        if getattr(sys, "frozen", False):
+            try:
+                import cv2  # noqa: F401
+                import pywinstyles  # noqa: F401
+                from PyQt6 import QtCore, QtGui, QtWidgets  # noqa: F401
+                from sqlcipher3 import dbapi2
+
+                conn = dbapi2.connect(":memory:")
+                try:
+                    if not conn.execute("PRAGMA cipher_version").fetchone()[0]:
+                        raise RuntimeError("SQLCipher is unavailable")
+                finally:
+                    conn.close()
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    _setup_logging()
+                    logging.exception("Healthcheck failed")
+                except Exception:  # noqa: BLE001
+                    pass
+                if sys.stderr is not None:
+                    print(f"healthcheck failed: {exc}", file=sys.stderr)
+                return 1
+        if sys.stdout is not None:
+            print("healthcheck:ok")
         return 0
 
     os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")

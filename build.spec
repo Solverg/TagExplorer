@@ -25,6 +25,9 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+# Qt's unversioned ICU dependency is supplied by supported Windows versions.
+# Other tools on PATH can provide an incompatible DLL with the same name.
+a.binaries = [item for item in a.binaries if item[0].lower() != 'icuuc.dll']
 pyz = PYZ(a.pure)
 
 exe = EXE(

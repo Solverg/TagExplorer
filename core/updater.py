@@ -125,7 +125,8 @@ def run_downloaded_exe_healthcheck(file_path: str | Path) -> None:
 def update_target_dir() -> Path:
     """Return the directory where downloaded update files should be staged."""
     if is_frozen():
-        return Path(sys.executable).resolve().parent
+        # Installed applications cannot write beside their executable in Program Files.
+        return Path(tempfile.mkdtemp(prefix="TagExplorer-update-"))
     return Path.cwd().resolve()
 
 
@@ -188,6 +189,11 @@ def download_update(
                 temp_download_path.unlink()
             except OSError:
                 logger.debug("Could not remove temporary update file", exc_info=True)
+        if is_frozen():
+            try:
+                target_dir.rmdir()  # Only succeeds when staging left the directory empty.
+            except OSError:
+                pass
 
 
 def apply_update_and_relaunch(argv: Sequence[str] | None = None) -> int:

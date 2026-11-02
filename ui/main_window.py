@@ -59,6 +59,7 @@ class ScanWorker(QThread):
 
     finished_scan = pyqtSignal(int, str, list)
     failed = pyqtSignal(int, str, str)
+    cache_migration_warnings = pyqtSignal(list)
     SCAN_DB_BATCH_SIZE = 1000
 
     def __init__(
@@ -83,6 +84,11 @@ class ScanWorker(QThread):
         cache: FileCache | None = None
         try:
             cache = FileCache()
+            warnings = cache.migrate_legacy_scan_caches(self.scanner.cache_dir, self._should_cancel)
+            if warnings and not self._should_cancel():
+                self.cache_migration_warnings.emit(warnings)
+            if self._should_cancel():
+                return
             if self.force_rescan:
                 if self.recursive_scan:
                     cache.clear_tree(self.folder)
@@ -218,6 +224,7 @@ class MainWindow(QMainWindow):
         self.cache = FileCache()
         self._pending_cache_warnings = list(self.cache.security_warnings)
         self.current_folder = Path.home().resolve()
+        self._tag_filter_folder: str | None = None
         self.all_records: list[dict[str, Any]] = []
         self._filtered_tagged: list[dict[str, Any]] = []
         self._filtered_untagged: list[dict[str, Any]] = []
@@ -740,6 +747,7 @@ class MainWindow(QMainWindow):
         )
         self.scan_worker.finished_scan.connect(self._on_scan_complete)
         self.scan_worker.failed.connect(self._on_scan_failed)
+        self.scan_worker.cache_migration_warnings.connect(self._on_cache_migration_warnings)
         self.scan_worker.finished.connect(
             lambda worker=self.scan_worker, worker_scan_id=scan_id: self._on_scan_worker_finished(
                 worker_scan_id,
@@ -760,7 +768,8 @@ class MainWindow(QMainWindow):
             for record in records
             for tag in normalize_tags(record.get("tags", []))
         )
-        self.tag_panel.set_tags(tags)
+        self.tag_panel.set_tags(tags, preserve_selection=self._tag_filter_folder == folder_key)
+        self._tag_filter_folder = folder_key
 
     def _schedule_filter(self, *args) -> None:
         self._filter_timer.start()
@@ -796,6 +805,10 @@ class MainWindow(QMainWindow):
             "\n\n".join(self._pending_cache_warnings),
         )
         self._pending_cache_warnings.clear()
+
+    def _on_cache_migration_warnings(self, warnings: list[str]) -> None:
+        if not self._closing and warnings:
+            QMessageBox.warning(self, "Cache migration warning", "\n\n".join(warnings))
 
     def _apply_filter(self, *args) -> None:
         selected_tags = self.tag_panel.selected_tags()
@@ -912,7 +925,7 @@ class MainWindow(QMainWindow):
             return
 
         app = QApplication.instance()
-        current_version = app.applicationVersion() if app is not None else "1.2.0"
+        current_version = app.applicationVersion() if app is not None else "1.3.0"
         self._manual_update_check = manual
         if manual:
             self.statusBar().showMessage("Checking for updates...")

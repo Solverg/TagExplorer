@@ -52,4 +52,4 @@ def filter_files(
             if selected.intersection(set(record_tags(record)))
         ]
 
-    return tagged, untagged
+    return tagged, []

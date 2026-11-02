@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import tempfile
 import time
 import stat as stat_module
 from collections import deque
@@ -13,7 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from core.tags import TAG_PATTERN, parse_tags
+from core.tags import parse_tags
 
 logger = logging.getLogger(__name__)
 
@@ -25,34 +23,6 @@ DOCUMENT_EXTENSIONS = frozenset(
 )
 CACHE_TTL_SECONDS = 10 * 60
 SCAN_BATCH_SIZE = 1000
-
-# System and technical directories that are almost always noise for media-oriented scans.
-IGNORED_DIRS = frozenset(
-    {
-        "$RECYCLE.BIN",
-        "System Volume Information",
-        "Windows",
-        "Program Files",
-        "Program Files (x86)",
-        "ProgramData",
-        "AppData",
-        "Recovery",
-        ".Trash",
-        ".Trashes",
-        "lost+found",
-        ".cache",
-        "sys",
-        "proc",
-        "dev",
-        ".git",
-        ".svn",
-        "node_modules",
-        "venv",
-        ".venv",
-        "__pycache__",
-    }
-)
-
 
 @dataclass(slots=True)
 class FileRecord:
@@ -79,12 +49,9 @@ class FileScanner:
     """Scans folders and extracts filename tags and file metadata."""
 
     def __init__(self, cache_dir: Path | None = None, cache_ttl_seconds: int = CACHE_TTL_SECONDS):
+        # Retained for callers that used the former recursive JSON cache.
         self.cache_dir = cache_dir or Path.home() / ".texplorer" / "cache"
         self.cache_ttl_seconds = cache_ttl_seconds
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            logger.error("Failed to create cache directory %s: %s", self.cache_dir, exc)
 
     @staticmethod
     def parse_tags(filename: str) -> list[str]:
@@ -107,7 +74,9 @@ class FileScanner:
 
     def _record_from_entry(self, entry: os.DirEntry[str]) -> FileRecord | None:
         try:
-            stat = entry.stat(follow_symlinks=False)
+            # On Windows DirEntry.stat() can report zero for st_dev and st_ino.
+            # Fetch the same identity that file operations later obtain via lstat.
+            stat = Path(entry.path).lstat() if os.name == "nt" else entry.stat(follow_symlinks=False)
         except OSError:
             return None
         if self._is_windows_reparse_point(stat):
@@ -128,29 +97,6 @@ class FileScanner:
             is_reparse_point=self._is_windows_reparse_point(stat),
         )
 
-    def _get_cache_filepath(self, folder: Path) -> Path:
-        """Return stable cache path for recursive scans."""
-        resolved = str(folder.resolve())
-        safe_name = resolved.replace(":", "").replace("\\", "_").replace("/", "_")
-        if len(safe_name) > 200:
-            import hashlib
-
-            safe_name = hashlib.md5(resolved.encode("utf-8")).hexdigest()
-        return self.cache_dir / f"scan_{safe_name}.json"
-
-    @staticmethod
-    def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-        """Write JSON atomically to avoid corrupted cache files."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(prefix=path.name, suffix=".tmp", dir=path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
-            os.replace(tmp_name, path)
-        finally:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
-
     @staticmethod
     def _is_windows_reparse_point(stat_result: os.stat_result) -> bool:
         if os.name != "nt":
@@ -167,22 +113,6 @@ class FileScanner:
             return True
 
     @classmethod
-    def _directory_snapshot(cls, folder: Path) -> dict[str, Any]:
-        stat_result = folder.stat(follow_symlinks=False)
-        return {
-            "path": str(folder.resolve()),
-            "modified_time_ns": getattr(
-                stat_result,
-                "st_mtime_ns",
-                int(stat_result.st_mtime * 1_000_000_000),
-            ),
-            "device_id": getattr(stat_result, "st_dev", None),
-            "inode": getattr(stat_result, "st_ino", None),
-            "mode": getattr(stat_result, "st_mode", None),
-            "is_reparse_point": cls._is_windows_reparse_point(stat_result),
-        }
-
-    @classmethod
     def _is_valid_scan_root(cls, folder: Path) -> bool:
         try:
             stat_result = folder.stat(follow_symlinks=False)
@@ -193,25 +123,6 @@ class FileScanner:
         if cls._is_windows_reparse_point(stat_result):
             return False
         return stat_module.S_ISDIR(stat_result.st_mode)
-
-    def _cache_is_valid(self, folder: Path, cache_data: dict[str, Any]) -> bool:
-        scanned_at = cache_data.get("scanned_at")
-        if not isinstance(scanned_at, (int, float)):
-            return False
-        if time.time() - float(scanned_at) > self.cache_ttl_seconds:
-            return False
-
-        cached_root = cache_data.get("root_snapshot")
-        if not isinstance(cached_root, dict):
-            return False
-
-        try:
-            current_root = self._directory_snapshot(folder)
-        except OSError:
-            return False
-
-        keys = ("path", "modified_time_ns", "device_id", "inode", "mode", "is_reparse_point")
-        return all(cached_root.get(key) == current_root.get(key) for key in keys)
 
     def scan_directory(
         self,
@@ -262,7 +173,7 @@ class FileScanner:
         progress_callback: Callable[[int, str], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
     ) -> list[dict[str, Any]]:
-        """Safely scan a directory tree recursively with cache support."""
+        """Safely scan a directory tree recursively."""
         records: list[dict[str, Any]] = []
         for batch in self.iter_deep_scan_directory(
             folder,
@@ -281,39 +192,13 @@ class FileScanner:
         should_cancel: Callable[[], bool] | None = None,
         batch_size: int = SCAN_BATCH_SIZE,
     ) -> Iterator[list[dict[str, Any]]]:
-        """Safely scan a directory tree recursively and yield records in batches."""
+        """Scan the tree in batches; force_rescan is retained for compatibility."""
         if not self._is_valid_scan_root(folder):
             logger.error("Directory does not exist or is not a dir: %s", folder)
             return
 
-        cache_file = self._get_cache_filepath(folder)
-
-        if not force_rescan and cache_file.exists():
-            try:
-                if should_cancel and should_cancel():
-                    return
-                with cache_file.open("r", encoding="utf-8") as handle:
-                    cache_data = json.load(handle)
-                if not self._cache_is_valid(folder, cache_data):
-                    raise ValueError("cache is stale")
-                cached_records = cache_data.get("records", [])
-                if should_cancel and should_cancel():
-                    return
-                batch: list[dict[str, Any]] = []
-                for record in cached_records:
-                    if should_cancel and should_cancel():
-                        return
-                    batch.append(FileRecord(**record).to_dict())
-                    if len(batch) >= batch_size:
-                        yield batch
-                        batch = []
-                if batch:
-                    yield batch
-                return
-            except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
-                logger.warning("Cache load failed for %s, rescanning: %s", folder, exc)
-
-        all_records: list[dict[str, Any]] = []
+        # A root directory timestamp cannot reveal changes deeper in the tree
+        # or changes to file contents. Always scan to return current identities.
         batch: list[dict[str, Any]] = []
         queue = deque([str(folder.resolve())])
         visited_dir_ids: set[tuple[int, int]] = set()
@@ -346,8 +231,6 @@ class FileScanner:
                             return []
                         try:
                             if entry.is_dir(follow_symlinks=False):
-                                if entry.name in IGNORED_DIRS or entry.name.startswith("."):
-                                    continue
                                 if self._entry_is_reparse_point(entry):
                                     continue
                                 queue.append(entry.path)
@@ -356,7 +239,6 @@ class FileScanner:
                                 if record is None:
                                     continue
                                 record_dict = record.to_dict()
-                                all_records.append(record_dict)
                                 batch.append(record_dict)
                                 scanned_files_count += 1
                                 if len(batch) >= batch_size:
@@ -368,21 +250,10 @@ class FileScanner:
                 continue
 
         elapsed = time.perf_counter() - start
-        logger.info("Deep scan finished in %.2fs, %d files", elapsed, len(all_records))
+        logger.info("Deep scan finished in %.2fs, %d files", elapsed, scanned_files_count)
 
         if should_cancel and should_cancel():
             return
 
         if batch:
             yield batch
-
-        try:
-            payload = {
-                "scanned_at": time.time(),
-                "root_folder": str(folder.resolve()),
-                "root_snapshot": self._directory_snapshot(folder),
-                "records": all_records,
-            }
-            self._atomic_write_json(cache_file, payload)
-        except OSError as exc:
-            logger.error("Failed to save cache for %s: %s", folder, exc)
