@@ -63,9 +63,7 @@ internal static class UpdateBridge
             }
 
             VerifyInstalledApplication(installedExe);
-            var launch = new ProcessStartInfo(installedExe) {
-                UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(installedExe)
-            };
+            var launch = CreateIndependentAppStart(installedExe, "");
 #if TEST_MODE
             if (Environment.GetEnvironmentVariable("TAGEXPLORER_TEST_SILENT_SETUP") == "1")
                 launch.Arguments = "--healthcheck";
@@ -136,14 +134,25 @@ internal static class UpdateBridge
         if (!String.Equals(info.ProductName, "TagExplorer", StringComparison.OrdinalIgnoreCase) ||
             !String.Equals(info.ProductVersion, expectedVersion, StringComparison.OrdinalIgnoreCase))
             throw new IOException("The expected installed version could not be verified.");
-        using (Process check = Process.Start(new ProcessStartInfo(path, "--healthcheck") {
-            UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(path)
-        }))
+        using (Process check = Process.Start(CreateIndependentAppStart(path, "--healthcheck")))
         {
             if (check == null) throw new IOException("The installed application did not start its health check.");
             if (!check.WaitForExit(60000)) { check.Kill(); throw new IOException("The installed application health check timed out."); }
             if (check.ExitCode != 0) throw new IOException("The installed application health check failed.");
         }
+    }
+
+    private static ProcessStartInfo CreateIndependentAppStart(string path, string arguments)
+    {
+        // The bridge can inherit PyInstaller state from the old one-file app.
+        // When the installed path is unchanged, the new process could reuse the
+        // old extraction directory, which disappears as the old process exits.
+        var start = new ProcessStartInfo(path, arguments) {
+            UseShellExecute = false, CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(path)
+        };
+        start.EnvironmentVariables["PYINSTALLER_RESET_ENVIRONMENT"] = "1";
+        return start;
     }
 
     private static void StartStagedCleanup(string stagedPath)

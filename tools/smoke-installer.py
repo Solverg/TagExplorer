@@ -54,6 +54,8 @@ def main() -> None:
         run(compiler, "/nologo", "/target:winexe", "/platform:x64", "/define:TEST_MODE",
             "/reference:System.Windows.Forms.dll", f"/out:{bridge}", f"/resource:{setup},TagExplorer-Setup.exe",
             f"/resource:{cleaner},BridgeCleaner.exe", f"/resource:{version},version.txt", ROOT / "installer/UpdateBridge.cs")
+        bridge_source = root / "bridge-source.exe"
+        shutil.copyfile(bridge, bridge_source)
         validate_downloaded_exe(bridge)
         run_downloaded_exe_healthcheck(bridge)
         installed = root / "Program Files/TagExplorer/TagExplorer.exe"
@@ -62,6 +64,13 @@ def main() -> None:
         error = root / "error.txt"
         env = dict(os.environ, TAGEXPLORER_TEST_INSTALLED_EXE=str(installed),
                    TAGEXPLORER_TEST_SILENT_SETUP="1", TAGEXPLORER_TEST_ERROR_FILE=str(error))
+        # Simulate the inherited state of the old one-file executable after its
+        # extraction directory was deleted. Both the healthcheck and final
+        # launch must reset that state before starting the installed build.
+        env.update(_PYI_ARCHIVE_FILE=str(installed),
+                   _PYI_APPLICATION_HOME_DIR=str(root / 'removed old extraction'),
+                   _PYI_PARENT_PROCESS_LEVEL='1')
+        env.pop('PYINSTALLER_RESET_ENVIRONMENT', None)
         result = subprocess.run([str(bridge), "--apply-update", str(legacy)], env=env, timeout=180)
         if result.returncode != 0:
             raise RuntimeError(f"Bridge failed ({result.returncode}): {error.read_text() if error.exists() else 'no error details'}")
@@ -70,7 +79,18 @@ def main() -> None:
             time.sleep(0.1)
         if legacy.exists() or bridge.exists() or not installed.is_file() or sentinel.read_text() != "unchanged":
             raise RuntimeError("The installer or cleanup did not produce the expected result.")
-        print("Real installer and bridge passed the isolated portable-upgrade smoke test.")
+        # Repeat with the installed executable at the same path as the old app;
+        # this is the case where stale PyInstaller state refers to that path.
+        shutil.copyfile(bridge_source, bridge)
+        result = subprocess.run([str(bridge), "--apply-update", str(installed)], env=env, timeout=180)
+        if result.returncode != 0:
+            raise RuntimeError(f"Installed upgrade failed ({result.returncode}): {error.read_text() if error.exists() else 'no error details'}")
+        deadline = time.monotonic() + 15
+        while bridge.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if bridge.exists() or not installed.is_file() or sentinel.read_text() != "unchanged":
+            raise RuntimeError("Installed upgrade did not preserve the application and user data.")
+        print("Real installer and bridge passed isolated portable and installed upgrade smoke tests.")
 
 
 if __name__ == "__main__":

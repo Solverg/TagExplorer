@@ -31,10 +31,11 @@ class UpdateDialogTest(unittest.TestCase):
         window = Window()
         dialog = UpdateDialog("v1.3.0", "https://example.test", window)
         with patch("ui.updater.is_frozen", return_value=True), \
-             patch("ui.updater.subprocess.Popen", side_effect=lambda *a, **k: events.append("started")), \
+             patch("ui.updater.subprocess.Popen", side_effect=lambda *a, **k: events.append("started")) as start, \
              patch("ui.updater.QApplication.quit"):
             dialog.apply_update("update.exe")
         self.assertEqual(events, ["closed", "started"])
+        self.assertEqual(start.call_args.kwargs['env']['PYINSTALLER_RESET_ENVIRONMENT'], '1')
         dialog.close()
 
     def test_does_not_start_installer_if_window_refuses_to_close(self):

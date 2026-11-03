@@ -184,6 +184,7 @@ class UpdateDialog(QDialog):
                 [new_exe_path, "--apply-update", current_exe],
                 cwd=exe_dir,
                 creationflags=create_no_window,
+                env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"},
             )
         except OSError as exc:
             self.show_error(f"Could not start the installer; reopen TagExplorer to retry: {exc}")

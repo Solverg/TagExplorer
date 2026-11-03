@@ -74,6 +74,15 @@ class UpdateBridgeIntegrationTest(unittest.TestCase):
         code, old, installed, marker, error, _staged = self.run_upgrade({"TAGEXPLORER_TEST_ALREADY_INSTALLED": "1"})
         self.assertEqual((code, old, installed, marker, error), (0, True, True, True, ""))
 
+    def test_installed_update_resets_inherited_pyinstaller_environment(self):
+        code, old, installed, marker, error, staged = self.run_upgrade({
+            "TAGEXPLORER_TEST_ALREADY_INSTALLED": "1",
+            "TAGEXPLORER_TEST_REQUIRE_RESET": "1",
+            "_PYI_APPLICATION_HOME_DIR": "removed old extraction",
+            "_PYI_PARENT_PROCESS_LEVEL": "1",
+        })
+        self.assertEqual((code, old, installed, marker, error, staged), (0, True, True, True, "", False))
+
     def test_invalid_install_keeps_old_executable(self):
         code, old, installed, marker, error, _staged = self.run_upgrade({"TAGEXPLORER_TEST_MISSING_INSTALL": "1"})
         self.assertEqual((code, old, installed, marker), (1, True, False, False))

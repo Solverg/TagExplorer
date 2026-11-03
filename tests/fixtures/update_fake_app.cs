@@ -10,6 +10,8 @@ internal static class FakeApp
 {
     private static int Main(string[] args)
     {
+        if (Environment.GetEnvironmentVariable("TAGEXPLORER_TEST_REQUIRE_RESET") == "1" &&
+            Environment.GetEnvironmentVariable("PYINSTALLER_RESET_ENVIRONMENT") != "1") return 7;
         if (args.Length == 1 && args[0] == "--healthcheck") return 0;
         string marker = Environment.GetEnvironmentVariable("TAGEXPLORER_TEST_LAUNCH_MARKER");
         if (!String.IsNullOrEmpty(marker)) File.WriteAllText(marker, "launched");

@@ -112,6 +112,7 @@ def run_downloaded_exe_healthcheck(file_path: str | Path) -> None:
         timeout=20,
         check=False,
         creationflags=create_no_window,
+        env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"},
     )
 
     if result.returncode != 0:
@@ -225,6 +226,7 @@ def apply_update_and_relaunch(argv: Sequence[str] | None = None) -> int:
         [str(old_exe)],
         cwd=str(exe_dir),
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"},
     )
     os._exit(0)
 
