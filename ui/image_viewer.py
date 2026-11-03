@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ui.i18n import tr, translate_detail
+
 from pathlib import Path
 
 from PyQt6.QtCore import QSize, QTimer, Qt
@@ -24,7 +26,7 @@ class ImageViewerDialog(QDialog):
 
     def __init__(self, paths: list[Path], start_path: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("TagExplorer Image Viewer")
+        self.setWindowTitle(tr("TagExplorer Image Viewer"))
         self.setWindowFlags(
             self.windowFlags()
             | Qt.WindowType.WindowMaximizeButtonHint
@@ -69,11 +71,11 @@ class ImageViewerDialog(QDialog):
 
     def _load_image(self) -> None:
         if not self.image_paths:
-            self.image_label.setText("No images to display")
+            self.image_label.setText(tr("No images to display"))
             return
 
         path = self.image_paths[self.current_index]
-        self.setWindowTitle(f"Viewer - {path.name} ({self.current_index + 1} of {len(self.image_paths)})")
+        self.setWindowTitle(tr("Viewer - {name} ({index} of {total})", name=path.name, index=self.current_index + 1, total=len(self.image_paths)))
 
         self._clear_current_media()
         self.image_label.clear()
@@ -88,7 +90,7 @@ class ImageViewerDialog(QDialog):
                 QSize(IMAGE_PREVIEW_TARGET_EDGE, IMAGE_PREVIEW_TARGET_EDGE),
             )
         except MediaSafetyError as exc:
-            self.image_label.setText(str(exc))
+            self.image_label.setText(translate_detail(exc))
             return
 
         self._current_pixmap = QPixmap.fromImage(image)
@@ -101,7 +103,7 @@ class ImageViewerDialog(QDialog):
                 QSize(IMAGE_PREVIEW_TARGET_EDGE, IMAGE_PREVIEW_TARGET_EDGE),
             )
         except MediaSafetyError as exc:
-            self.image_label.setText(str(exc))
+            self.image_label.setText(translate_detail(exc))
             return
 
         movie = QMovie(str(path))

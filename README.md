@@ -6,14 +6,16 @@
 ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)
 
 TagExplorer is a high-performance desktop file manager for Windows that uses
-tag-based navigation. Tags are embedded directly into filenames, for example
-`report [work][2024].pdf`, so they survive copies, cloud sync, and moves
+tag-based navigation. Tags are embedded directly into file or folder names, for
+example `report [work][2024].pdf` or `Projects [work]`, so they survive copies, cloud sync, and moves
 without a hidden metadata database.
 
 ## Key Features
 
 - Native Windows 10/11 desktop UI with application-owned dark and light themes,
   independent of the Windows system color theme.
+- English and Russian interface languages, switchable at any time under
+  `Options > Language`; the choice is remembered between launches.
 - Folder navigation with quick access locations, drive roots, direct scans, and
   recursive scans.
 - Fast tag filtering with AND / OR logic plus NOT exclusions.
@@ -25,6 +27,19 @@ without a hidden metadata database.
   plaintext SQLite fallback warning when SQLCipher is unavailable.
 
 ## Tag Filtering
+
+Use the `File tags` / `Folder tags` switch above the tag panel to change what
+is scanned and edited without restarting. Folder mode lists the subfolders of
+the current folder and reads tags only from their own names; tags in files
+inside them do not affect the folder results. Double-click a folder to open
+it. Recursive mode includes subfolders at every level. The file-type filter is
+available only in file mode, and switching modes clears the active tag filters.
+Tag editing renames the selected folder, preserving its contents. A parent
+folder and its descendant must be edited in separate batches.
+If a folder cannot be scanned, TagExplorer warns that the results are
+incomplete. Batch edits attempt to restore earlier names if a later rename
+fails; if restoration is not possible, the warning lists the affected paths.
+An abrupt shutdown can interrupt a batch before recovery runs.
 
 Tag filtering is built around two active filter groups:
 

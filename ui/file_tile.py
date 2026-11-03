@@ -29,6 +29,7 @@ from core.file_ops import (
     TargetExistsError,
     build_target_path,
     ensure_current_regular_file,
+    ensure_current_directory,
     execute_rename_plan,
     path_key,
     preflight_rename,
@@ -39,8 +40,9 @@ from core.file_ops import (
 from core.cache import FileCache
 from core.media_safety import read_limited_image, read_limited_video_frame
 from core.tags import TagValidationError, build_tagged_filename, normalize_tags, sort_tags, tag_sort_key
-from ui.file_actions import open_path_with_shell, reveal_path_in_explorer
+from ui.file_actions import open_path_with_shell, reveal_path_in_explorer, snapshot_selection
 from ui.file_list import TagEditDialog
+from ui.i18n import tr, translate_detail
 from ui.image_viewer import ImageViewerDialog, get_supported_image_suffixes
 from ui.theme import DEFAULT_THEME, ThemeName, normalize_theme_name, theme_spec
 
@@ -81,8 +83,8 @@ class LRUCache:
             self._cache.popitem(last=False)
 
 
-def _get_icon_pixmap(path: str) -> QPixmap:
-    suffix = Path(path).suffix.lower()
+def _get_icon_pixmap(path: str, is_directory: bool = False) -> QPixmap:
+    suffix = "<folder>" if is_directory else Path(path).suffix.lower()
     if suffix not in _icon_cache:
         provider = QFileIconProvider()
         _icon_cache[suffix] = provider.icon(QFileInfo(path)).pixmap(TILE_SIZE, TILE_SIZE)
@@ -116,6 +118,8 @@ class TileModel(QAbstractListModel):
         record = self._records[index.row()]
         if role == Qt.ItemDataRole.DisplayRole:
             return record["filename"]
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return record["path"]
         if role == THUMB_ROLE:
             return self._thumb_cache.get(record["path"])
         if role == Qt.ItemDataRole.UserRole:
@@ -324,7 +328,7 @@ class TileDelegate(QStyledItemDelegate):
         path = record["path"] if record else ""
 
         thumb: QImage | None = index.data(THUMB_ROLE)
-        pixmap = QPixmap.fromImage(thumb) if (thumb and not thumb.isNull()) else _get_icon_pixmap(path)
+        pixmap = QPixmap.fromImage(thumb) if (thumb and not thumb.isNull()) else _get_icon_pixmap(path, bool(record and record.get("is_directory")))
 
         image_zone_h = TILE_H - TEXT_H
         if pixmap.width() > TILE_W or pixmap.height() > image_zone_h:
@@ -464,7 +468,7 @@ class SectionWidget(QWidget):
         self._model.rowsInserted.connect(lambda *_: QTimer.singleShot(0, self._update_list_height))
         self._model.modelReset.connect(lambda *_: QTimer.singleShot(0, self._update_list_height))
 
-        self._empty_label = QLabel("No files")
+        self._empty_label = QLabel(tr("No files"))
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_label.hide()
 
@@ -613,7 +617,7 @@ class SectionWidget(QWidget):
         for row in range(first_row, last_row):
             record = self._model._records[row]
             path = record.get("path") if record else None
-            if not path:
+            if not path or record.get("is_directory"):
                 continue
             suffix = Path(path).suffix.lower()
             if suffix in IMAGE_EXTENSIONS or suffix in VIDEO_EXTENSIONS:
@@ -632,6 +636,7 @@ class FileTileWidget(QWidget):
 
     selection_changed = pyqtSignal(list)
     files_changed = pyqtSignal()
+    folder_opened = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -640,6 +645,7 @@ class FileTileWidget(QWidget):
         self._shared_model = TileModel(self)   # фиктивная модель только для кэша
         self.thumb_mgr = ThumbnailManager(self._shared_model)
         self.tags_at_start = False
+        self.folder_mode = False
         self._viewer: ImageViewerDialog | None = None
 
         self._pending_tagged: list[dict] = []
@@ -687,6 +693,13 @@ class FileTileWidget(QWidget):
 
         self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self.apply_theme(self._theme_name)
+
+    def set_folder_mode(self, enabled: bool) -> None:
+        self.folder_mode = enabled
+        self._sec_tagged._label.setText(tr("Tagged folders" if enabled else "Tagged files"))
+        self._sec_untagged._label.setText(tr("Untagged folders" if enabled else "Untagged files"))
+        self._sec_tagged._empty_label.setText(tr("No folders" if enabled else "No files"))
+        self._sec_untagged._empty_label.setText(tr("No folders" if enabled else "No files"))
 
     def apply_theme(self, theme_name: ThemeName) -> None:
         self._theme_name = normalize_theme_name(theme_name)
@@ -860,10 +873,18 @@ class FileTileWidget(QWidget):
 
     def _open_file_by_path(self, path_str: str) -> None:
         path = Path(path_str)
+        if self.folder_mode:
+            try:
+                ensure_current_directory(path, self._identity_for_path(path))
+            except FileOperationError as exc:
+                QMessageBox.warning(self, tr("Open folder"), translate_detail(exc))
+                return
+            self.folder_opened.emit(str(path))
+            return
         try:
             ensure_current_regular_file(path, self._identity_for_path(path))
         except FileOperationError as exc:
-            QMessageBox.warning(self, "Open file", str(exc))
+            QMessageBox.warning(self, tr("Open file"), translate_detail(exc))
             return
 
         if path.suffix.lower() in get_supported_image_suffixes():
@@ -877,10 +898,10 @@ class FileTileWidget(QWidget):
 
     def _show_context_menu(self, global_pos: QPoint) -> None:
         menu = QMenu(self)
-        edit_action = QAction("Edit tags", self)
-        rename_action = QAction("Rename", self)
-        delete_action = QAction("Delete", self)
-        open_location_action = QAction("Open file location", self)
+        edit_action = QAction(tr("Edit tags"), self)
+        rename_action = QAction(tr("Rename"), self)
+        delete_action = QAction(tr("Delete"), self)
+        open_location_action = QAction(tr("Open location"), self)
 
         edit_action.triggered.connect(self._edit_tags)
         rename_action.triggered.connect(self._rename_files)
@@ -890,7 +911,8 @@ class FileTileWidget(QWidget):
         menu.addAction(edit_action)
         menu.addSeparator()
         menu.addAction(rename_action)
-        menu.addAction(delete_action)
+        if not self.folder_mode:
+            menu.addAction(delete_action)
         menu.addSeparator()
         menu.addAction(open_location_action)
         menu.exec(global_pos)
@@ -916,8 +938,15 @@ class FileTileWidget(QWidget):
     def _edit_tags(self) -> None:
         selected_paths = self.selected_paths()
         if not selected_paths:
-            QMessageBox.information(self, "Edit tags", "Please select one or more files to edit tags.")
+            QMessageBox.information(self, tr("Edit tags"), tr("Please select one or more items to edit tags."))
             return
+
+        try:
+            selection = snapshot_selection(selected_paths, self._records_by_path(), self.folder_mode)
+        except FileOperationError as exc:
+            QMessageBox.warning(self, tr("Edit tags"), translate_detail(exc))
+            return
+        selected_folder_mode = self.folder_mode
 
         available_tags = set()
         for record in self._records_by_path().values():
@@ -926,7 +955,7 @@ class FileTileWidget(QWidget):
 
         tag_counts: dict[str, int] = {}
         for path in selected_paths:
-            for tag in self._tags_for_path(path):
+            for tag in selection[path][1]:
                 tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
         total_files = len(selected_paths)
@@ -934,9 +963,14 @@ class FileTileWidget(QWidget):
         for tag, count in tag_counts.items():
             initial_states[tag] = 1 if count == total_files else 2
 
-        title_info = f"File: {selected_paths[0].name}" if total_files == 1 else f"Selected files: {total_files}"
+        kind = "Folder" if self.folder_mode else "File"
+        title_info = tr("Folder: {name}" if self.folder_mode else "File: {name}", name=selected_paths[0].name) if total_files == 1 else tr("Selected folders: {count}" if self.folder_mode else "Selected files: {count}", count=total_files)
         dialog = TagEditDialog(title_info, initial_states, available_tags, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        if self.folder_mode != selected_folder_mode:
+            QMessageBox.warning(self, tr("Edit tags"), tr("The mode changed. Refresh and try again."))
             return
 
         tags_to_add, tags_to_remove = dialog.get_actions()
@@ -944,12 +978,14 @@ class FileTileWidget(QWidget):
         reserved_targets: set[str] = set()
         errors: list[str] = []
         for source_path in selected_paths:
-            existing_tags = set(self._tags_for_path(source_path))
+            identity, original_tags = selection[source_path]
+            existing_tags = set(original_tags)
             final_tags = sort_tags((existing_tags - tags_to_remove) | tags_to_add)
             operation, error_message = self._build_tag_rename_operation(
                 source_path,
                 final_tags,
                 reserved_targets,
+                identity,
             )
             if error_message:
                 errors.append(f"{source_path.name}: {error_message}")
@@ -960,8 +996,8 @@ class FileTileWidget(QWidget):
 
         if errors:
             details = "\n".join(errors[:8])
-            more = f"\n... and {len(errors) - 8} more file(s)." if len(errors) > 8 else ""
-            QMessageBox.warning(self, "Batch edit cancelled", f"{details}{more}")
+            more = tr("\n... and {count} more file(s).", count=len(errors) - 8) if len(errors) > 8 else ""
+            QMessageBox.warning(self, tr("Batch edit cancelled"), f"{details}{more}")
             return
 
         if not operations:
@@ -970,10 +1006,11 @@ class FileTileWidget(QWidget):
         try:
             execute_rename_plan(operations)
         except BatchRenameError as exc:
-            message = str(exc)
+            message = translate_detail(exc)
             if exc.rollback_errors:
-                message += "\n\nRollback warnings:\n" + "\n".join(exc.rollback_errors[:8])
-            QMessageBox.warning(self, "Batch edit failed", message)
+                message += "\n\n" + tr("Rollback warnings:") + "\n" + "\n".join(translate_detail(error) for error in exc.rollback_errors)
+            self.files_changed.emit()
+            QMessageBox.warning(self, tr("Batch edit failed"), message)
             return
 
         self.preserve_scroll_on_next_reload()
@@ -981,13 +1018,14 @@ class FileTileWidget(QWidget):
 
     def _rename_with_tags(self, source_path: Path, updated_tags: list[str]) -> tuple[bool, str | None]:
         try:
-            new_name = build_tagged_filename(source_path, updated_tags, self.tags_at_start)
+            identity = snapshot_selection([source_path], self._records_by_path(), self.folder_mode)[source_path][0]
+            new_name = build_tagged_filename(source_path, updated_tags, self.tags_at_start, is_directory=self.folder_mode)
             target_path = build_target_path(source_path, new_name)
             if os.fspath(source_path) == os.fspath(target_path):
                 return False, None
-            self._safe_rename_with_collision_prompt(source_path, target_path)
+            self._safe_rename_with_collision_prompt(source_path, target_path, identity)
         except (TagValidationError, FilenameValidationError, FileOperationError) as exc:
-            return False, str(exc)
+            return False, translate_detail(exc)
         return True, None
 
     def _build_tag_rename_operation(
@@ -995,70 +1033,85 @@ class FileTileWidget(QWidget):
         source_path: Path,
         updated_tags: list[str],
         reserved_targets: set[str],
+        expected: FileIdentity,
     ) -> tuple[RenameOperation | None, str | None]:
+        selected_folder_mode = self.folder_mode
         try:
-            new_name = build_tagged_filename(source_path, updated_tags, self.tags_at_start)
+            new_name = build_tagged_filename(source_path, updated_tags, self.tags_at_start, is_directory=self.folder_mode)
             target_path = build_target_path(source_path, new_name)
             if os.fspath(source_path) == os.fspath(target_path):
                 return None, None
-            operation = RenameOperation(source_path, target_path, self._identity_for_path(source_path))
+            operation = RenameOperation(source_path, target_path, expected, selected_folder_mode)
             try:
                 preflight_rename(operation, reserved_targets)
             except TargetExistsError:
-                suggested_path = unique_path(target_path, reserved_targets)
+                suggested_path = unique_path(target_path, reserved_targets, is_directory=self.folder_mode)
                 reply = QMessageBox.question(
                     self,
-                    "Tag conflict",
-                    f"Applying tags creates a conflict: '{target_path.name}' already exists.\n\n"
-                    f"Save as '{suggested_path.name}'?",
+                    tr("Tag conflict"),
+                    tr("Applying tags creates a conflict: '{target}' already exists.\n\nSave as '{suggested}'?", target=target_path.name, suggested=suggested_path.name),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.Yes,
                 )
                 if reply != QMessageBox.StandardButton.Yes:
                     return None, f"Skipped (user rejected auto-rename to {suggested_path.name})"
-                operation = RenameOperation(source_path, suggested_path, self._identity_for_path(source_path))
+                if self.folder_mode != selected_folder_mode:
+                    raise FileOperationError("The mode changed. Refresh and try again.")
+                operation = RenameOperation(source_path, suggested_path, expected, selected_folder_mode)
                 preflight_rename(operation, reserved_targets)
             return operation, None
         except (TagValidationError, FilenameValidationError, FileOperationError) as exc:
-            return None, str(exc)
+            return None, translate_detail(exc)
 
-    def _safe_rename_with_collision_prompt(self, source_path: Path, target_path: Path) -> Path:
-        operation = RenameOperation(source_path, target_path, self._identity_for_path(source_path))
+    def _safe_rename_with_collision_prompt(self, source_path: Path, target_path: Path, expected: FileIdentity) -> Path:
+        selected_folder_mode = self.folder_mode
+        operation = RenameOperation(source_path, target_path, expected, selected_folder_mode)
         try:
             return safe_rename(operation)
         except TargetExistsError:
-            suggested_path = unique_path(target_path)
+            suggested_path = unique_path(target_path, is_directory=self.folder_mode)
             reply = QMessageBox.question(
                 self,
-                "File already exists",
-                f"A file named '{target_path.name}' already exists.\n\n"
-                f"Would you like to rename it to '{suggested_path.name}' instead?",
+                tr("Name already exists"),
+                tr("An item named '{target}' already exists.\n\nWould you like to rename it to '{suggested}' instead?", target=target_path.name, suggested=suggested_path.name),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
             if reply != QMessageBox.StandardButton.Yes:
                 raise FileOperationError("Rename cancelled because the target already exists.")
-            return safe_rename(RenameOperation(source_path, suggested_path, self._identity_for_path(source_path)))
+            if self.folder_mode != selected_folder_mode:
+                raise FileOperationError("The mode changed. Refresh and try again.")
+            return safe_rename(RenameOperation(source_path, suggested_path, expected, selected_folder_mode))
 
     def _rename_files(self) -> None:
         selected_paths = self.selected_paths()
         if not selected_paths:
             return
         if len(selected_paths) > 1:
-            QMessageBox.information(self, "Rename", "Please select a single file to rename.")
+            QMessageBox.information(self, tr("Rename"), tr("Please select a single item to rename."))
             return
         source_path = selected_paths[0]
-        new_name, ok = QInputDialog.getText(self, "Rename", "New filename:", text=source_path.name)
+        try:
+            identity = snapshot_selection([source_path], self._records_by_path(), self.folder_mode)[source_path][0]
+        except FileOperationError as exc:
+            QMessageBox.warning(self, tr("Rename"), translate_detail(exc))
+            return
+        selected_folder_mode = self.folder_mode
+        new_name, ok = QInputDialog.getText(self, tr("Rename"), tr("New name:"), text=source_path.name)
         if not ok:
+            return
+        if self.folder_mode != selected_folder_mode:
+            QMessageBox.warning(self, tr("Rename"), tr("The mode changed. Refresh and try again."))
             return
         new_name = new_name.strip()
         if not new_name or new_name == source_path.name:
             return
         try:
             target_path = build_target_path(source_path, new_name)
-            self._safe_rename_with_collision_prompt(source_path, target_path)
+            self._safe_rename_with_collision_prompt(source_path, target_path, identity)
         except (FilenameValidationError, FileOperationError) as exc:
-            QMessageBox.warning(self, "Rename", str(exc))
+            self.files_changed.emit()
+            QMessageBox.warning(self, tr("Rename"), translate_detail(exc))
             return
         self.preserve_scroll_on_next_reload()
         self.files_changed.emit()
@@ -1066,45 +1119,52 @@ class FileTileWidget(QWidget):
     def _get_unique_path(self, target_path: Path) -> Path:
         if not target_path.exists():
             return target_path
-        return unique_path(target_path)
+        return unique_path(target_path, is_directory=self.folder_mode)
 
     def _delete_files(self) -> None:
         selected_paths = self.selected_paths()
         if not selected_paths:
             return
+        try:
+            selection = snapshot_selection(selected_paths, self._records_by_path(), False)
+        except FileOperationError as exc:
+            QMessageBox.warning(self, tr("Delete"), translate_detail(exc))
+            return
         reply = QMessageBox.question(
             self,
-            "Delete",
-            f"Delete selected file(s)?\n\n{selected_paths[0].name}"
-            + (f"\n... and {len(selected_paths) - 1} more file(s)." if len(selected_paths) > 1 else ""),
+            tr("Delete"),
+            tr("Delete selected file(s)?\n\n{names}{more}", names=selected_paths[0].name, more=tr("\n... and {count} more file(s).", count=len(selected_paths) - 1) if len(selected_paths) > 1 else ""),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
+        if self.folder_mode:
+            QMessageBox.warning(self, tr("Delete"), tr("The mode changed. Refresh and try again."))
+            return
         errors: list[str] = []
         deleted = 0
         for path in selected_paths:
             try:
-                safe_delete(path, self._identity_for_path(path))
+                safe_delete(path, selection[path][0])
                 deleted += 1
             except FileOperationError as exc:
-                errors.append(f"{path.name}: {exc}")
+                errors.append(f"{path.name}: {translate_detail(exc)}")
         if deleted:
             self.preserve_scroll_on_next_reload()
             self.files_changed.emit()
         if errors:
-            QMessageBox.warning(self, "Delete", "\n".join(errors[:8]))
+            QMessageBox.warning(self, tr("Delete"), "\n".join(errors[:8]))
 
     def _open_file_location(self) -> None:
         selected_paths = self.selected_paths()
         if not selected_paths:
             return
         try:
-            ensure_current_regular_file(selected_paths[0], self._identity_for_path(selected_paths[0]))
+            (ensure_current_directory if self.folder_mode else ensure_current_regular_file)(selected_paths[0], self._identity_for_path(selected_paths[0]))
             reveal_path_in_explorer(self, selected_paths[0])
         except FileOperationError as exc:
-            QMessageBox.warning(self, "Open location", f"Unable to open file location:\n{exc}")
+            QMessageBox.warning(self, tr("Open location"), tr("Unable to open file location:\n{error}", error=exc))
 
     def _identity_for_path(self, path: Path) -> FileIdentity | None:
         return FileIdentity.from_record(self._records_by_path().get(str(path)))

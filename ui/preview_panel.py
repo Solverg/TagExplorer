@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ui.i18n import tr, translate_detail
+
 from datetime import datetime
 from pathlib import Path
 
@@ -34,7 +36,9 @@ class PreviewWorker(QThread):
         preview_size = QSize(IMAGE_PREVIEW_TARGET_EDGE, IMAGE_PREVIEW_TARGET_EDGE)
 
         try:
-            if ext in IMAGE_EXTENSIONS:
+            if self.path.is_dir():
+                payload = {"kind": "other", "path": self.path}
+            elif ext in IMAGE_EXTENSIONS:
                 if self.isInterruptionRequested():
                     return
                 image = read_limited_image(self.path, preview_size)
@@ -79,7 +83,7 @@ class PreviewPanel(QWidget):
         self._current_pixmap: QPixmap | None = None
 
         layout = QVBoxLayout(self)
-        self.image_label = QLabel("Select a file to preview")
+        self.image_label = QLabel(tr("Select a file to preview"))
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setMinimumSize(1, 1)
         self.image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
@@ -100,7 +104,7 @@ class PreviewPanel(QWidget):
         if len(paths) != 1:
             self._selected_preview_path = None
             self._cancel_worker(wait_ms=50)
-            self.image_label.setText("Select a single file to preview")
+            self.image_label.setText(tr("Select a single file to preview"))
             self.image_label.setPixmap(QPixmap())
             self.info_label.setText("")
             self._current_pixmap = None
@@ -108,7 +112,7 @@ class PreviewPanel(QWidget):
 
         self._cancel_worker(wait_ms=50)
 
-        self.image_label.setText("Loading preview...")
+        self.image_label.setText(tr("Loading preview..."))
         self.image_label.setPixmap(QPixmap())
         self.info_label.setText("")
         self._current_pixmap = None
@@ -160,11 +164,11 @@ class PreviewPanel(QWidget):
 
         try:
             stat = path.stat()
-            size_text = f"{stat.st_size:,} bytes"
+            size_text = tr("{size} bytes", size=f"{stat.st_size:,}")
             modified_text = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
         except OSError:
-            size_text = "Unknown"
-            modified_text = "Unknown"
+            size_text = tr("Unknown")
+            modified_text = tr("Unknown")
 
         if payload.get("kind") in {"image", "video"} and payload.get("image") is not None:
             self._current_pixmap = QPixmap.fromImage(payload["image"])
@@ -173,12 +177,12 @@ class PreviewPanel(QWidget):
             self._current_pixmap = None
             icon = self.icon_provider.icon(QFileInfo(str(path)))
             self.image_label.setPixmap(icon.pixmap(96, 96))
-            self.image_label.setText(payload.get("error", "No preview available"))
+            self.image_label.setText(translate_detail(payload.get("error", tr("No preview available"))))
 
         duration = payload.get("duration")
-        duration_text = f"\nDuration: {duration:.1f} s" if duration is not None else ""
+        duration_text = tr("\nDuration: {seconds} s", seconds=f"{duration:.1f}") if duration is not None else ""
         self.info_label.setText(
-            f"Name: {path.name}\nPath: {path}\nSize: {size_text}\nModified: {modified_text}{duration_text}"
+            tr("Name: {name}\nPath: {path}\nSize: {size}\nModified: {modified}{duration}", name=path.name, path=path, size=size_text, modified=modified_text, duration=duration_text)
         )
 
     def shutdown(self) -> None:

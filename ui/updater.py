@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ui.i18n import tr
+
 import logging
 import os
 import subprocess
@@ -110,7 +112,7 @@ class UpdateDialog(QDialog):
         self.download_url = download_url
         self.downloader: UpdateDownloader | None = None
 
-        self.setWindowTitle("Update Available")
+        self.setWindowTitle(tr("Update Available"))
         self.setFixedSize(420, 178)
 
         layout = QVBoxLayout(self)
@@ -118,8 +120,7 @@ class UpdateDialog(QDialog):
         layout.setSpacing(10)
 
         self.info_label = QLabel(
-            f"<b>TagExplorer {version} is available.</b><br><br>"
-            "Install the update now?"
+            tr("<b>TagExplorer {version} is available.</b><br><br>Install the update now?", version=version)
         )
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
@@ -132,10 +133,10 @@ class UpdateDialog(QDialog):
         button_layout = QHBoxLayout()
         button_layout.addStretch()
 
-        self.cancel_button = QPushButton("Later")
+        self.cancel_button = QPushButton(tr("Later"))
         self.cancel_button.clicked.connect(self.reject)
 
-        self.update_button = QPushButton("Update")
+        self.update_button = QPushButton(tr("Update"))
         self.update_button.setObjectName("primary")
         self.update_button.clicked.connect(self.start_update)
 
@@ -147,7 +148,7 @@ class UpdateDialog(QDialog):
         self.update_button.setEnabled(False)
         self.cancel_button.setEnabled(False)
         self.progress_bar.show()
-        self.info_label.setText("Downloading update...")
+        self.info_label.setText(tr("Downloading update..."))
 
         self.downloader = UpdateDownloader(self.download_url)
         self.downloader.progress.connect(self.progress_bar.setValue)
@@ -156,21 +157,20 @@ class UpdateDialog(QDialog):
         self.downloader.start()
 
     def show_error(self, error_message: str) -> None:
-        self.info_label.setText(f"Update failed: {error_message}")
+        self.info_label.setText(tr("Update failed: {error}", error=error_message))
         self.cancel_button.setEnabled(True)
-        self.cancel_button.setText("Close")
+        self.cancel_button.setText(tr("Close"))
 
     def apply_update(self, new_exe_path: str) -> None:
         if not is_frozen():
             self.info_label.setText(
-                f"Update downloaded to:<br>{Path(new_exe_path)}<br><br>"
-                "Development mode does not replace the running app."
+                tr("Update downloaded to:<br>{path}<br><br>Development mode does not replace the running app.", path=Path(new_exe_path))
             )
             self.cancel_button.setEnabled(True)
-            self.cancel_button.setText("Close")
+            self.cancel_button.setText(tr("Close"))
             return
 
-        self.info_label.setText("Closing TagExplorer and starting the installer...")
+        self.info_label.setText(tr("Closing TagExplorer and starting the installer..."))
         current_exe = sys.executable
         exe_dir = os.path.dirname(current_exe)
         create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)

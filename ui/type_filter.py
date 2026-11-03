@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ui.theme import DEFAULT_THEME, ThemeName, normalize_theme_name, type_filter_button_stylesheet
+from ui.i18n import tr
 
 
 class CollapsibleTypeFilter(QWidget):
@@ -64,7 +65,10 @@ class CollapsibleTypeFilter(QWidget):
         """Show/hide collapsible content."""
         is_visible = self.content_widget.isVisible()
         self.content_widget.setVisible(not is_visible)
-        self.toggle_btn.setText("▼ File types" if not is_visible else "▶ File types")
+        self.toggle_btn.setText(tr("▼ File types" if not is_visible else "▶ File types"))
+
+    def retranslate(self) -> None:
+        self.toggle_btn.setText(tr("▼ File types" if not self.content_widget.isHidden() else "▶ File types"))
 
     def selected_types(self) -> list[str]:
         """Return internal IDs for currently selected types."""

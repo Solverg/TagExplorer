@@ -72,12 +72,15 @@ class FileScanner:
             return "document"
         return "other"
 
-    def _record_from_entry(self, entry: os.DirEntry[str]) -> FileRecord | None:
+    def _record_from_entry(self, entry: os.DirEntry[str],
+                           on_error: Callable[[str], None] | None = None) -> FileRecord | None:
         try:
             # On Windows DirEntry.stat() can report zero for st_dev and st_ino.
             # Fetch the same identity that file operations later obtain via lstat.
             stat = Path(entry.path).lstat() if os.name == "nt" else entry.stat(follow_symlinks=False)
-        except OSError:
+        except OSError as exc:
+            if on_error:
+                on_error(f"Cannot inspect '{entry.path}': {exc}")
             return None
         if self._is_windows_reparse_point(stat):
             return None
@@ -97,6 +100,56 @@ class FileScanner:
             is_reparse_point=self._is_windows_reparse_point(stat),
         )
 
+    def iter_scan_folders(self, folder: Path, recursive: bool = False,
+                          should_cancel: Callable[[], bool] | None = None,
+                          batch_size: int = SCAN_BATCH_SIZE,
+                          on_error: Callable[[str], None] | None = None) -> Iterator[list[dict[str, Any]]]:
+        """Return directories only, never reading tags from files or following links."""
+        if not self._is_valid_scan_root(folder):
+            if on_error:
+                on_error(f"Cannot scan '{folder}': folder is unavailable or is a link.")
+            return
+        queue = deque([str(folder.resolve())])
+        batch: list[dict[str, Any]] = []
+        while queue:
+            if should_cancel and should_cancel():
+                return
+            current = queue.popleft()
+            if not self._is_valid_scan_root(Path(current)):
+                if on_error:
+                    on_error(f"Cannot scan '{current}': folder is unavailable or is a link.")
+                continue
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        if should_cancel and should_cancel():
+                            return
+                        try:
+                            if not entry.is_dir(follow_symlinks=False) or self._entry_is_reparse_point(entry, on_error):
+                                continue
+                            record = self._record_from_entry(entry, on_error)
+                            if record is None:
+                                continue
+                            item = record.to_dict()
+                            item['file_type'] = 'folder'
+                            item['is_directory'] = True
+                            batch.append(item)
+                            if recursive:
+                                queue.append(entry.path)
+                            if len(batch) >= batch_size:
+                                yield batch
+                                batch = []
+                        except OSError as exc:
+                            if on_error:
+                                on_error(f"Cannot inspect '{entry.path}': {exc}")
+                            continue
+            except OSError as exc:
+                logger.warning("Could not scan directory %s: %s", current, exc)
+                if on_error:
+                    on_error(f"Cannot scan '{current}': {exc}")
+        if batch:
+            yield batch
+
     @staticmethod
     def _is_windows_reparse_point(stat_result: os.stat_result) -> bool:
         if os.name != "nt":
@@ -106,10 +159,13 @@ class FileScanner:
         return bool(attrs & reparse_flag)
 
     @classmethod
-    def _entry_is_reparse_point(cls, entry: os.DirEntry[str]) -> bool:
+    def _entry_is_reparse_point(cls, entry: os.DirEntry[str],
+                                on_error: Callable[[str], None] | None = None) -> bool:
         try:
             return cls._is_windows_reparse_point(entry.stat(follow_symlinks=False))
-        except OSError:
+        except OSError as exc:
+            if on_error:
+                on_error(f"Cannot inspect '{entry.path}': {exc}")
             return True
 
     @classmethod

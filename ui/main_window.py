@@ -36,6 +36,7 @@ from core.cache import FileCache
 from core.filter_engine import filter_files
 from core.scanner import FileScanner
 from core.tags import normalize_tags, sort_tags
+from ui.i18n import bind_static_text, load_language, retranslate_static_text, set_language, tr, translate_detail
 from ui.file_list import FileListWidget
 from ui.file_tile import FileTileWidget
 from ui.preview_panel import PreviewPanel
@@ -60,6 +61,7 @@ class ScanWorker(QThread):
     finished_scan = pyqtSignal(int, str, list)
     failed = pyqtSignal(int, str, str)
     cache_migration_warnings = pyqtSignal(list)
+    folder_scan_warnings = pyqtSignal(int, str, list, int)
     SCAN_DB_BATCH_SIZE = 1000
 
     def __init__(
@@ -68,6 +70,7 @@ class ScanWorker(QThread):
         folder: Path,
         force_rescan: bool = False,
         recursive_scan: bool = False,
+        folder_mode: bool = False,
     ) -> None:
         super().__init__()
         self.scan_id = scan_id
@@ -75,6 +78,7 @@ class ScanWorker(QThread):
         self.force_rescan = force_rescan
         self.scanner = FileScanner()
         self.recursive_scan = recursive_scan
+        self.folder_mode = folder_mode
 
     def _should_cancel(self) -> bool:
         return self.isInterruptionRequested()
@@ -83,6 +87,26 @@ class ScanWorker(QThread):
         folder_key = self.folder.resolve().as_posix()
         cache: FileCache | None = None
         try:
+            if self.folder_mode:
+                records = []
+                warnings: list[str] = []
+                warning_count = 0
+
+                def record_warning(message: str) -> None:
+                    nonlocal warning_count
+                    warning_count += 1
+                    if len(warnings) < 8:
+                        warnings.append(message)
+
+                for batch in self.scanner.iter_scan_folders(
+                    self.folder, self.recursive_scan, self._should_cancel, on_error=record_warning
+                ):
+                    records.extend(batch)
+                if not self._should_cancel():
+                    self.finished_scan.emit(self.scan_id, folder_key, records)
+                    if warning_count:
+                        self.folder_scan_warnings.emit(self.scan_id, folder_key, warnings, warning_count)
+                return
             cache = FileCache()
             warnings = cache.migrate_legacy_scan_caches(self.scanner.cache_dir, self._should_cancel)
             if warnings and not self._should_cancel():
@@ -218,6 +242,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("TagExplorer")
         self.resize(1300, 760)
+        self._language_name = load_language()
+        set_language(self._language_name)
         self._theme_name: ThemeName = load_theme_name()
         self._set_windows_title_bar_color(self._theme_name)
 
@@ -234,13 +260,14 @@ class MainWindow(QMainWindow):
         self._pending_view_scroll_restore: tuple[str, int] | None = None
         self.scan_worker: ScanWorker | None = None
         self._scan_generation = 0
-        self._pending_scan: tuple[int, Path, bool, bool] | None = None
+        self._pending_scan: tuple[int, Path, bool, bool, bool] | None = None
         self._closing = False
         self._update_checked = False
         self._manual_update_check = False
         self.update_checker: UpdateChecker | None = None
         self.update_dialog: UpdateDialog | None = None
         self.recursive_scan_enabled = False
+        self.folder_mode = False
         self._filter_timer = QTimer(self)
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(150)
@@ -248,6 +275,7 @@ class MainWindow(QMainWindow):
 
         self._build_menu()
         self._build_ui()
+        bind_static_text(self)
         self._connect_signals()
 
         self.setStatusBar(QStatusBar())
@@ -308,6 +336,19 @@ class MainWindow(QMainWindow):
         self.tags_at_start_action.setCheckable(True)
         self.tags_at_start_action.setChecked(False)
         self.tags_at_start_action.triggered.connect(self._toggle_tags_position)
+
+        language_menu = options_menu.addMenu("Language")
+        self.language_action_group = QActionGroup(self)
+        self.language_action_group.setExclusive(True)
+        self.english_language_action = language_menu.addAction("English")
+        self.russian_language_action = language_menu.addAction("Russian")
+        for action in (self.english_language_action, self.russian_language_action):
+            action.setCheckable(True)
+            self.language_action_group.addAction(action)
+        self.english_language_action.setChecked(self._language_name == "en")
+        self.russian_language_action.setChecked(self._language_name == "ru")
+        self.english_language_action.triggered.connect(lambda: self._set_language("en"))
+        self.russian_language_action.triggered.connect(lambda: self._set_language("ru"))
 
         help_menu = menu_bar.addMenu("Help")
         check_updates_action = help_menu.addAction("Check for Updates")
@@ -395,6 +436,14 @@ class MainWindow(QMainWindow):
         center_panel = QWidget()
         center_panel.setObjectName("CenterPanel")
         center_layout = QVBoxLayout(center_panel)
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("File tags"))
+        self.folder_mode_switch = ToggleSwitch()
+        self.folder_mode_switch.setToolTip("Switch between file tags and folder tags")
+        target_row.addWidget(self.folder_mode_switch)
+        target_row.addWidget(QLabel("Folder tags"))
+        target_row.addStretch(1)
+        center_layout.addLayout(target_row)
         self.tag_panel = TagPanel()
         self.type_filter = CollapsibleTypeFilter()
         self.file_list = FileListWidget()
@@ -428,6 +477,24 @@ class MainWindow(QMainWindow):
     def _set_theme(self, theme_name: ThemeName) -> None:
         self._apply_theme(theme_name, persist=True, announce=True)
 
+    def _set_language(self, language_name: str) -> None:
+        self._language_name = "ru" if language_name == "ru" else "en"
+        set_language(self._language_name, persist=True)
+        retranslate_static_text(self)
+        self._update_rescan_button_label()
+        self.type_filter.retranslate()
+        self.tag_panel.mode_toggle.update()
+        for button in self.tag_panel._tag_buttons.values():
+            button.setToolTip(tr("Click to include tag · click 🚫 to exclude from results"))
+        self.tag_panel._update_active_filters()
+        self.file_list.model.retranslate()
+        self.file_tile_widget.set_folder_mode(self.folder_mode)
+        self._populate_places_tree()
+        self._sync_places_selection()
+        paths = self.file_tile_widget.selected_paths() if self._current_view_mode == "tiles" else self.file_list._selected_paths()
+        self.preview_panel.show_selection(paths)
+        self._update_display_status()
+
     def _apply_theme(
         self,
         theme_name: ThemeName,
@@ -449,7 +516,7 @@ class MainWindow(QMainWindow):
 
         if announce:
             label = "Dark" if self._theme_name == "dark" else "Light"
-            self.statusBar().showMessage(f"{label} theme enabled", 3000)
+            self.statusBar().showMessage(tr(label + " theme enabled"), 3000)
 
     def _sync_theme_menu_state(self) -> None:
         if not hasattr(self, "dark_theme_action") or not hasattr(self, "light_theme_action"):
@@ -484,6 +551,9 @@ class MainWindow(QMainWindow):
         self.file_tile_widget.selection_changed.connect(self.preview_panel.show_selection)
         self.file_list.files_changed.connect(self._on_files_changed)
         self.file_tile_widget.files_changed.connect(self._on_files_changed)
+        self.folder_mode_switch.toggled.connect(self._toggle_folder_mode)
+        self.file_list.folder_opened.connect(self._open_result_folder)
+        self.file_tile_widget.folder_opened.connect(self._open_result_folder)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
@@ -495,12 +565,34 @@ class MainWindow(QMainWindow):
         self.file_list.tags_at_start = checked
         self.file_tile_widget.tags_at_start = checked
 
+    def _open_result_folder(self, path: str) -> None:
+        self._set_current_folder(Path(path), update_navigation_root=False)
+
+    def _toggle_folder_mode(self, enabled: bool) -> None:
+        self.folder_mode = enabled
+        self.file_list.set_folder_mode(enabled)
+        self.file_tile_widget.set_folder_mode(enabled)
+        self.type_filter.setVisible(not enabled)
+        self._clear_current_results()
+        self.refresh_folder(force_rescan=False)
+
+    def _clear_current_results(self) -> None:
+        """Remove stale selections and results before changing their scope."""
+        self._filter_timer.stop()
+        self._tag_filter_folder = None
+        self.tag_panel.set_tags([], preserve_selection=False)
+        self.all_records = []
+        self.file_list.set_files([], [])
+        self.file_tile_widget.set_files_batched([], [])
+        self.preview_panel.show_selection([])
+        self._apply_filter()
+
     def _populate_places_tree(self) -> None:
         self.places_tree.blockSignals(True)
         self.places_tree.clear()
 
         quick_access = self._create_group_item(
-            "Quick access",
+            tr("Quick access"),
             QStyle.StandardPixmap.SP_DirHomeIcon,
         )
         self.places_tree.addTopLevelItem(quick_access)
@@ -509,7 +601,7 @@ class MainWindow(QMainWindow):
             quick_access.addChild(self._create_place_item(title, path, kind))
 
         this_pc = self._create_group_item(
-            "This PC",
+            tr("This PC"),
             QStyle.StandardPixmap.SP_ComputerIcon,
         )
         self.places_tree.addTopLevelItem(this_pc)
@@ -566,7 +658,15 @@ class MainWindow(QMainWindow):
                 continue
 
             seen.add(normalized)
-            title = QStandardPaths.displayName(location) or place_path.name or str(place_path)
+            names = {
+                QStandardPaths.StandardLocation.DesktopLocation: "Desktop",
+                QStandardPaths.StandardLocation.DocumentsLocation: "Documents",
+                QStandardPaths.StandardLocation.DownloadLocation: "Downloads",
+                QStandardPaths.StandardLocation.PicturesLocation: "Pictures",
+                QStandardPaths.StandardLocation.MusicLocation: "Music",
+                QStandardPaths.StandardLocation.MoviesLocation: "Movies",
+            }
+            title = tr(names[location]) if location in names else (QStandardPaths.displayName(location) or place_path.name or str(place_path))
             yield title, str(place_path.resolve()), "folder"
 
     def _iter_drive_places(self) -> Iterator[tuple[str, str, str]]:
@@ -611,8 +711,11 @@ class MainWindow(QMainWindow):
 
     def _set_current_folder(self, folder: Path, *, update_navigation_root: bool) -> None:
         resolved_folder = folder.resolve()
+        changed_folder = self._normalized_path(resolved_folder) != self._normalized_path(self.current_folder)
         self.current_folder = resolved_folder
         self._pending_view_scroll_restore = None
+        if changed_folder:
+            self._clear_current_results()
 
         # --- ЭТАП 4: Экстренная выгрузка памяти ---
         if hasattr(self, "file_tile_widget"):
@@ -680,7 +783,7 @@ class MainWindow(QMainWindow):
     def open_folder_dialog(self) -> None:
         selected = QFileDialog.getExistingDirectory(
             self,
-            "Open Folder",
+            tr("Open Folder"),
             str(self.current_folder),
             QFileDialog.Option.DontUseNativeDialog,
         )
@@ -693,7 +796,7 @@ class MainWindow(QMainWindow):
         """Pick a folder and immediately run recursive scan for it."""
         selected = QFileDialog.getExistingDirectory(
             self,
-            "Scan Folder Recursively",
+            tr("Scan Folder Recursively"),
             str(self.current_folder),
             QFileDialog.Option.DontUseNativeDialog,
         )
@@ -716,14 +819,16 @@ class MainWindow(QMainWindow):
         scan_id = self._scan_generation
         folder = self.current_folder
         recursive_scan = self.recursive_scan_enabled
+        folder_mode = self.folder_mode
 
-        if self.scan_worker and self.scan_worker.isRunning():
-            self._pending_scan = (scan_id, folder, force_rescan, recursive_scan)
-            self.scan_worker.requestInterruption()
-            self.statusBar().showMessage(f"Waiting for previous scan to stop: {folder}")
+        if self.scan_worker is not None:
+            self._pending_scan = (scan_id, folder, force_rescan, recursive_scan, folder_mode)
+            if self.scan_worker.isRunning():
+                self.scan_worker.requestInterruption()
+            self.statusBar().showMessage(tr("Waiting for previous scan to stop: {folder}", folder=folder))
             return
 
-        self._start_scan(scan_id, folder, force_rescan, recursive_scan)
+        self._start_scan(scan_id, folder, force_rescan, recursive_scan, folder_mode)
 
     def _start_scan(
         self,
@@ -731,6 +836,7 @@ class MainWindow(QMainWindow):
         folder: Path,
         force_rescan: bool,
         recursive_scan: bool,
+        folder_mode: bool,
     ) -> None:
         """Start a scan for an immutable folder/mode snapshot."""
         if self._closing:
@@ -738,16 +844,18 @@ class MainWindow(QMainWindow):
 
         self._populate_places_tree()
         self._sync_places_selection()
-        self.statusBar().showMessage(f"Scanning: {folder}")
+        self.statusBar().showMessage(tr("Scanning: {folder}", folder=folder))
         self.scan_worker = ScanWorker(
             scan_id,
             folder,
             force_rescan=force_rescan,
             recursive_scan=recursive_scan,
+            folder_mode=folder_mode,
         )
         self.scan_worker.finished_scan.connect(self._on_scan_complete)
         self.scan_worker.failed.connect(self._on_scan_failed)
         self.scan_worker.cache_migration_warnings.connect(self._on_cache_migration_warnings)
+        self.scan_worker.folder_scan_warnings.connect(self._on_folder_scan_warnings)
         self.scan_worker.finished.connect(
             lambda worker=self.scan_worker, worker_scan_id=scan_id: self._on_scan_worker_finished(
                 worker_scan_id,
@@ -780,15 +888,16 @@ class MainWindow(QMainWindow):
         if folder_key != self.current_folder.resolve().as_posix():
             return
 
-        QMessageBox.warning(self, "Scan error", f"Could not scan folder:\n{message}")
-        self.statusBar().showMessage("Scan failed")
+        QMessageBox.warning(self, tr("Scan error"), tr("Could not scan folder:\n{message}", message=translate_detail(message)))
+        self.statusBar().showMessage(tr("Scan failed"))
 
     def _on_scan_worker_finished(self, scan_id: int, worker: ScanWorker) -> None:
-        if self.scan_worker is worker:
+        is_current = self.scan_worker is worker
+        if is_current:
             self.scan_worker = None
         worker.deleteLater()
 
-        if self._closing:
+        if self._closing or not is_current:
             return
 
         if self._pending_scan is not None:
@@ -801,25 +910,36 @@ class MainWindow(QMainWindow):
             return
         QMessageBox.warning(
             self,
-            "Cache security warning",
-            "\n\n".join(self._pending_cache_warnings),
+            tr("Cache security warning"),
+            "\n\n".join(translate_detail(warning) for warning in self._pending_cache_warnings),
         )
         self._pending_cache_warnings.clear()
 
     def _on_cache_migration_warnings(self, warnings: list[str]) -> None:
         if not self._closing and warnings:
-            QMessageBox.warning(self, "Cache migration warning", "\n\n".join(warnings))
+            QMessageBox.warning(self, tr("Cache migration warning"), "\n\n".join(translate_detail(warning) for warning in warnings))
+
+    def _on_folder_scan_warnings(self, scan_id: int, folder_key: str, warnings: list[str], count: int) -> None:
+        if self._closing or scan_id != self._scan_generation:
+            return
+        if folder_key != self.current_folder.resolve().as_posix():
+            return
+        more = tr("\n... and {count} more issue(s).", count=count - len(warnings)) if count > len(warnings) else ""
+        QMessageBox.warning(
+            self, tr("Incomplete folder scan"),
+            tr("Some folders could not be scanned. Results may be incomplete.\n\n") + "\n".join(translate_detail(warning) for warning in warnings) + more,
+        )
 
     def _apply_filter(self, *args) -> None:
         selected_tags = self.tag_panel.selected_tags()
         excluded_tags = self.tag_panel.excluded_tags()
         mode = self.tag_panel.mode()
-        selected_types = self.type_filter.selected_types()
+        selected_types = None if self.folder_mode else self.type_filter.selected_types()
 
         try:
             tagged, untagged = filter_files(self.all_records, selected_tags, mode, selected_types, excluded_tags)
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(self, "Filter error", f"Could not apply filters:\n{exc}")
+            QMessageBox.warning(self, tr("Filter error"), tr("Could not apply filters:\n{error}", error=exc))
             return
 
         self._filtered_tagged = tagged
@@ -828,9 +948,11 @@ class MainWindow(QMainWindow):
         self._tile_view_dirty = True
         self._refresh_active_file_view()
         self._restore_pending_view_scroll()
-        displayed = len(tagged) + len(untagged)
-        total = len(self.all_records)
-        self.statusBar().showMessage(f"Displayed {displayed} of {total} files in {self.current_folder}")
+        self._update_display_status()
+
+    def _update_display_status(self) -> None:
+        source = "Displayed {displayed} of {total} folders in {folder}" if self.folder_mode else "Displayed {displayed} of {total} files in {folder}"
+        self.statusBar().showMessage(tr(source, displayed=len(self._filtered_tagged) + len(self._filtered_untagged), total=len(self.all_records), folder=self.current_folder))
 
     def _refresh_active_file_view(self) -> None:
         if self._current_view_mode == "tiles":
@@ -848,18 +970,18 @@ class MainWindow(QMainWindow):
         self.recursive_scan_enabled = enabled
         self._update_rescan_button_label()
         mode = "recursive" if enabled else "standard"
-        self.statusBar().showMessage(f"Scan mode: {mode}", 3000)
+        self.statusBar().showMessage(tr("Scan mode: " + mode), 3000)
         self.refresh_folder(force_rescan=True)
 
     def _update_rescan_button_label(self) -> None:
         """Keep rescan action obvious for the active scan mode."""
         if self.recursive_scan_enabled:
-            self.rescan_button.setText("Rescan Recursive Folder")
-            self.rescan_button.setToolTip("Run full recursive rescan for the current folder")
+            self.rescan_button.setText(tr("Rescan Recursive Folder"))
+            self.rescan_button.setToolTip(tr("Run full recursive rescan for the current folder"))
             return
 
-        self.rescan_button.setText("Rescan Current Folder")
-        self.rescan_button.setToolTip("Rescan only direct files in the current folder")
+        self.rescan_button.setText(tr("Rescan Current Folder"))
+        self.rescan_button.setToolTip(tr("Rescan direct items in the current folder"))
 
     def _set_view_mode(self, mode: str) -> None:
         if mode == "tiles":
@@ -867,14 +989,14 @@ class MainWindow(QMainWindow):
             self.view_stack.setCurrentWidget(self.file_tile_widget)
             self._sync_view_menu_state(list_checked=False, tiles_checked=True)
             self._refresh_active_file_view()
-            self.statusBar().showMessage("Tile view enabled")
+            self.statusBar().showMessage(tr("Tile view enabled"))
             return
 
         self._current_view_mode = "list"
         self.view_stack.setCurrentWidget(self.file_list)
         self._sync_view_menu_state(list_checked=True, tiles_checked=False)
         self._refresh_active_file_view()
-        self.statusBar().showMessage("List view enabled")
+        self.statusBar().showMessage(tr("List view enabled"))
 
     def _sync_view_menu_state(self, *, list_checked: bool, tiles_checked: bool) -> None:
         self.list_view_action.blockSignals(True)
@@ -912,23 +1034,22 @@ class MainWindow(QMainWindow):
         version = QApplication.instance().applicationVersion()
         QMessageBox.about(
             self,
-            "About TagExplorer",
-            f"TagExplorer {version}\n\n"
-            "A desktop file explorer that filters files by filename tags.",
+            tr("About TagExplorer"),
+            tr("TagExplorer {version}\n\nA desktop explorer that filters files and folders by name tags.", version=version),
         )
 
     def check_for_updates(self, manual: bool = False) -> None:
         """Check GitHub Releases for a newer TagExplorer build."""
         if self.update_checker is not None and self.update_checker.isRunning():
             if manual:
-                self.statusBar().showMessage("Update check already in progress", 3000)
+                self.statusBar().showMessage(tr("Update check already in progress"), 3000)
             return
 
         app = QApplication.instance()
         current_version = app.applicationVersion() if app is not None else "1.3.0"
         self._manual_update_check = manual
         if manual:
-            self.statusBar().showMessage("Checking for updates...")
+            self.statusBar().showMessage(tr("Checking for updates..."))
 
         self.update_checker = UpdateChecker(current_version)
         self.update_checker.update_available.connect(self.show_update_dialog)
@@ -938,20 +1059,20 @@ class MainWindow(QMainWindow):
         self.update_checker.start()
 
     def show_update_dialog(self, version: str, download_url: str) -> None:
-        self.statusBar().showMessage(f"Update available: {version}", 5000)
+        self.statusBar().showMessage(tr("Update available: {version}", version=version), 5000)
         self.update_dialog = UpdateDialog(version, download_url, self)
         self.update_dialog.exec()
 
     def _on_no_update_available(self, latest_tag: str) -> None:
         if self._manual_update_check:
-            suffix = f" Latest release: {latest_tag}." if latest_tag else ""
-            QMessageBox.information(self, "No Updates Available", f"TagExplorer is up to date.{suffix}")
-            self.statusBar().showMessage("TagExplorer is up to date", 3000)
+            suffix = tr(" Latest release: {version}.", version=latest_tag) if latest_tag else ""
+            QMessageBox.information(self, tr("No Updates Available"), tr("TagExplorer is up to date.{suffix}", suffix=suffix))
+            self.statusBar().showMessage(tr("TagExplorer is up to date"), 3000)
 
     def _on_update_check_failed(self, message: str) -> None:
         if self._manual_update_check:
-            QMessageBox.warning(self, "Update Check Failed", message)
-            self.statusBar().showMessage("Update check failed", 3000)
+            QMessageBox.warning(self, tr("Update Check Failed"), message)
+            self.statusBar().showMessage(tr("Update check failed"), 3000)
 
     def _clear_update_checker(self) -> None:
         if self.update_checker is not None:
@@ -969,7 +1090,7 @@ class MainWindow(QMainWindow):
             self.scan_worker.requestInterruption()
             if not self.scan_worker.wait(10000):
                 self._closing = False
-                self.statusBar().showMessage("Waiting for scan to stop before closing")
+                self.statusBar().showMessage(tr("Waiting for scan to stop before closing"))
                 event.ignore()
                 return
         if self.scan_worker is not None:

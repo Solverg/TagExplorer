@@ -57,15 +57,16 @@ def parse_tags(filename: str) -> list[str]:
     return normalize_tag_values(TAG_PATTERN.findall(filename))
 
 
-def build_tagged_filename(path: Path, tags: Iterable[object], tags_at_start: bool) -> str:
+def build_tagged_filename(path: Path, tags: Iterable[object], tags_at_start: bool, *, is_directory: bool = False) -> str:
     """Build a filename by replacing existing bracket tags with updated tags."""
     normalized_tags = sort_tags(tags)
     validate_tags(normalized_tags)
 
-    stem = TAG_PATTERN.sub("", path.stem).strip() or "untitled"
+    stem = TAG_PATTERN.sub("", path.name if is_directory else path.stem).strip() or "untitled"
+    suffix = "" if is_directory else path.suffix
     tag_text = "".join(f"[{tag}]" for tag in normalized_tags)
     if not tag_text:
-        return f"{stem}{path.suffix}"
+        return f"{stem}{suffix}"
     if tags_at_start:
-        return f"{tag_text} {stem}{path.suffix}"
-    return f"{stem} {tag_text}{path.suffix}"
+        return f"{tag_text} {stem}{suffix}"
+    return f"{stem} {tag_text}{suffix}"

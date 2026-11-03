@@ -18,12 +18,21 @@ from PyQt6.QtWidgets import (
 )
 
 from core.tags import tag_sort_key
+from ui.i18n import tr
 from ui.theme import (
     DEFAULT_THEME,
     ThemeName,
     destructive_secondary_action_button_stylesheet,
     normalize_theme_name,
 )
+
+
+def _restore_scrollbar(scroll_bar, value: int) -> None:
+    """A deferred restore may run after its owning window was destroyed."""
+    try:
+        scroll_bar.setValue(min(value, scroll_bar.maximum()))
+    except RuntimeError:
+        pass
 
 
 class ModeToggle(QWidget):
@@ -158,9 +167,9 @@ class ModeToggle(QWidget):
             return QColor("#94a3b8" if is_dark else "#64748b")
 
         p.setPen(_label_color(and_rect))
-        p.drawText(and_rect, Qt.AlignmentFlag.AlignCenter, "AND")
+        p.drawText(and_rect, Qt.AlignmentFlag.AlignCenter, tr("AND"))
         p.setPen(_label_color(or_rect))
-        p.drawText(or_rect, Qt.AlignmentFlag.AlignCenter, "OR")
+        p.drawText(or_rect, Qt.AlignmentFlag.AlignCenter, tr("OR"))
 
         p.end()
 
@@ -179,7 +188,7 @@ class TagFilterButton(QPushButton):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Click to include tag · click 🚫 to exclude from results")
+        self.setToolTip(tr("Click to include tag · click 🚫 to exclude from results"))
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
     def _exclude_button_rect(self) -> QRect:
@@ -398,7 +407,7 @@ class ActiveFilterRow(QWidget):
         for tag in tags:
             chip = QPushButton(f"{tag}  ×", self.content)
             chip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            chip.setToolTip("Remove this filter")
+            chip.setToolTip(tr("Remove this filter"))
             chip.clicked.connect(lambda _checked=False, tag=tag: remove_callback(tag))
             chip.setStyleSheet(stylesheet)
             chip.adjustSize()
@@ -413,7 +422,7 @@ class ActiveFilterRow(QWidget):
         scroll_bar.setValue(min(scroll_value, scroll_bar.maximum()))
         QTimer.singleShot(
             0,
-            lambda value=scroll_value, bar=scroll_bar: bar.setValue(min(value, bar.maximum())),
+            lambda value=scroll_value, bar=scroll_bar: _restore_scrollbar(bar, value),
         )
 
 
@@ -547,8 +556,13 @@ class TagPanel(QWidget):
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
         if event.type() in {QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange}:
-            self._refresh_tag_styles()
-            self._update_active_filters()
+            try:
+                self._refresh_tag_styles()
+                self._update_active_filters()
+            except RuntimeError as exc:
+                # Palette notifications can arrive while Qt is destroying child widgets.
+                if "has been deleted" not in str(exc):
+                    raise
 
     def selected_tags(self) -> list[str]:
         """Return selected tags in stable alphabetical order from initial tag mapping."""
@@ -614,7 +628,7 @@ class TagPanel(QWidget):
         scroll_bar.setValue(min(scroll_value, scroll_bar.maximum()))
         QTimer.singleShot(
             0,
-            lambda value=scroll_value, bar=scroll_bar: bar.setValue(min(value, bar.maximum())),
+            lambda value=scroll_value, bar=scroll_bar: _restore_scrollbar(bar, value),
         )
 
     def _set_tag_state(self, tag: str, state: str) -> None:

@@ -36,6 +36,16 @@ class TargetExistsError(FileOperationError):
     """Raised when a rename target already exists."""
 
 
+class RenamePostcheckError(FileOperationError):
+    """The OS rename succeeded, but its result could not be verified."""
+
+    def __init__(self, source: Path, target: Path, identity: "FileIdentity", cause: Exception) -> None:
+        super().__init__(
+            f"Rename completed from '{source}' to '{target}', but the result could not be verified: {cause}"
+        )
+        self.identity = identity
+
+
 @dataclass(frozen=True, slots=True)
 class FileIdentity:
     """A small lstat snapshot used to detect stale scan records."""
@@ -99,6 +109,7 @@ class RenameOperation:
     source: Path
     target: Path
     expected: FileIdentity | None = None
+    is_directory: bool = False
 
 
 class BatchRenameError(FileOperationError):
@@ -148,12 +159,12 @@ def build_target_path(source: Path, new_name: str) -> Path:
     return target
 
 
-def unique_path(target_path: Path, reserved_targets: set[str] | None = None) -> Path:
+def unique_path(target_path: Path, reserved_targets: set[str] | None = None, *, is_directory: bool = False) -> Path:
     """Return a validated non-existing sibling path not already reserved by a plan."""
     reserved_targets = reserved_targets or set()
     directory = target_path.parent
-    stem = target_path.stem
-    suffix = target_path.suffix
+    stem = target_path.name if is_directory else target_path.stem
+    suffix = "" if is_directory else target_path.suffix
     counter = 2
 
     while True:
@@ -190,14 +201,27 @@ def ensure_current_regular_file(path: Path, expected: FileIdentity | None = None
     return current
 
 
-def preflight_rename(operation: RenameOperation, reserved_targets: set[str] | None = None) -> None:
+def ensure_current_directory(path: Path, expected: FileIdentity | None = None) -> FileIdentity:
+    """Reject replaced, linked or otherwise unsafe directory entries."""
+    try:
+        current = FileIdentity.from_stat(path.lstat())
+    except OSError as exc:
+        raise FileOperationError(f"Folder is no longer available: {exc}") from exc
+    if current.is_symlink or current.is_reparse_point or not stat_module.S_ISDIR(current.mode):
+        raise FileOperationError("Selected path is no longer a safe folder.")
+    if expected is not None and not expected.matches(current):
+        raise FileChangedError("Folder changed since it was scanned. Refresh and try again.")
+    return current
+
+
+def preflight_rename(operation: RenameOperation, reserved_targets: set[str] | None = None) -> FileIdentity:
     """Validate one rename operation without changing the filesystem."""
     source = operation.source
     target = operation.target
     validate_filename(target.name)
     _validate_path_length(target)
     _ensure_same_directory(source, target)
-    ensure_current_regular_file(source, operation.expected)
+    identity = (ensure_current_directory if operation.is_directory else ensure_current_regular_file)(source, operation.expected)
 
     source_key = path_key(source)
     target_key = path_key(target)
@@ -205,12 +229,12 @@ def preflight_rename(operation: RenameOperation, reserved_targets: set[str] | No
         raise TargetExistsError(f"Rename target is already used by this batch: {target.name}")
 
     if source_key == target_key:
-        return
+        return identity
 
     try:
         target.lstat()
     except FileNotFoundError:
-        return
+        return identity
     except OSError as exc:
         raise FileOperationError(f"Could not check target '{target.name}': {exc}") from exc
 
@@ -221,7 +245,7 @@ def safe_rename(operation: RenameOperation) -> Path:
     """Rename one regular file without overwriting another file."""
     source = operation.source
     target = operation.target
-    preflight_rename(operation)
+    identity = preflight_rename(operation)
 
     if os.fspath(source) == os.fspath(target):
         return target
@@ -236,6 +260,8 @@ def safe_rename(operation: RenameOperation) -> Path:
                 _rename_case_only_windows(source, target)
             else:
                 os.rename(source, target)
+        elif operation.is_directory:
+            _rename_directory_no_overwrite_posix(source, target)
         else:
             _rename_no_overwrite_posix(source, target)
     except FileExistsError as exc:
@@ -243,35 +269,53 @@ def safe_rename(operation: RenameOperation) -> Path:
     except OSError as exc:
         raise FileOperationError(f"Could not rename file: {exc}") from exc
 
-    ensure_current_regular_file(target, None)
+    try:
+        (ensure_current_directory if operation.is_directory else ensure_current_regular_file)(target, identity)
+    except FileOperationError as exc:
+        raise RenamePostcheckError(source, target, identity, exc) from exc
     return target
 
 
 def execute_rename_plan(operations: list[RenameOperation]) -> None:
     """Execute an all-or-rollback rename plan."""
+    directory_sources = [op.source for op in operations if op.is_directory]
+    directory_keys = {path_key(source) for source in directory_sources}
+    if any(path_key(parent) in directory_keys for source in directory_sources for parent in source.parents):
+        raise BatchRenameError("Cannot edit a folder and its descendant together. Edit them separately.")
     reserved_targets: set[str] = set()
     for operation in operations:
-        preflight_rename(operation, reserved_targets)
+        try:
+            preflight_rename(operation, reserved_targets)
+        except (FileOperationError, FilenameValidationError) as exc:
+            raise BatchRenameError(str(exc), failed_operation=operation) from exc
         source_key = path_key(operation.source)
         target_key = path_key(operation.target)
         if source_key != target_key:
             reserved_targets.add(target_key)
 
-    completed: list[RenameOperation] = []
+    completed: list[tuple[RenameOperation, FileIdentity]] = []
     try:
         for operation in operations:
+            identity = (ensure_current_directory if operation.is_directory else ensure_current_regular_file)(
+                operation.source, operation.expected
+            )
             safe_rename(operation)
-            completed.append(operation)
-    except FileOperationError as exc:
+            completed.append((operation, identity))
+    except (FileOperationError, FilenameValidationError) as exc:
+        if isinstance(exc, RenamePostcheckError):
+            completed.append((operation, exc.identity))
         rollback_errors: list[str] = []
-        for done in reversed(completed):
-            rollback = RenameOperation(done.target, done.source, None)
+        for done, identity in reversed(completed):
+            rollback = RenameOperation(done.target, done.source, identity, done.is_directory)
             try:
                 safe_rename(rollback)
-            except FileOperationError as rollback_exc:
-                rollback_errors.append(f"{done.target.name}: {rollback_exc}")
+            except (FileOperationError, FilenameValidationError) as rollback_exc:
+                rollback_errors.append(f"Could not restore '{done.target}' to '{done.source}': {rollback_exc}")
+        message = str(exc)
+        if completed and not rollback_errors:
+            message += "\nCompleted changes were restored to their original names."
         raise BatchRenameError(
-            str(exc),
+            message,
             failed_operation=operation,
             rollback_errors=rollback_errors,
         ) from exc
@@ -302,11 +346,14 @@ def _rename_case_only_windows(source: Path, target: Path) -> None:
     os.rename(source, temp)
     try:
         os.rename(temp, target)
-    except OSError:
+    except OSError as exc:
         try:
             os.rename(temp, source)
-        except OSError:
-            pass
+        except OSError as restore_exc:
+            raise FileOperationError(
+                f"Rename failed: {exc}. Could not restore the original name: {restore_exc}. "
+                f"The item may remain at '{temp}'; check that location before retrying."
+            ) from restore_exc
         raise
 
 
@@ -329,6 +376,18 @@ def _rename_no_overwrite_posix(source: Path, target: Path) -> None:
             pass
         raise
 
+
+def _rename_directory_no_overwrite_posix(source: Path, target: Path) -> None:
+    # renameat2 is atomic and refuses to replace an existing directory.
+    import ctypes
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError("Safe directory rename is unavailable on this platform.")
+    result = renameat2(-100, os.fsencode(source), -100, os.fsencode(target), 1)
+    if result:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), os.fspath(target))
 
 def _temporary_sibling_path(source: Path) -> Path:
     for _ in range(100):
